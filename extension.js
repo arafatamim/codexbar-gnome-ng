@@ -18,6 +18,7 @@ import {
   UsageApiClient,
 } from "./usageApi.js";
 import { loadToken, nullTokenSchema } from "./secret.js";
+import { LogoCache } from "./logos.js";
 import {
   applyLanguage,
   currentLanguage,
@@ -124,6 +125,11 @@ export default class CodexBarExtension extends Extension {
     this._meterColor = null;
     this._loading = false;
     this._cancellable = new Gio.Cancellable();
+
+    // Provider icons come from the ACP registry, cached on disk; a download
+    // that lands during the session repaints the tabs and panel segments.
+    this._logos = new LogoCache(() => this._updateUI());
+    this._logos.refresh(this._cancellable);
 
     this._applyLanguage();
 
@@ -377,6 +383,11 @@ export default class CodexBarExtension extends Extension {
       this._cancellable = null;
     }
 
+    if (this._logos) {
+      this._logos.destroy();
+      this._logos = null;
+    }
+
     if (this._timeoutId) {
       GLib.source_remove(this._timeoutId);
       this._timeoutId = null;
@@ -490,6 +501,10 @@ export default class CodexBarExtension extends Extension {
     }
     this._loading = true;
     this._updateHeader();
+
+    // Cheap while the cached registry is fresh; keeps icons current in long
+    // sessions without another timer.
+    this._logos?.refresh(this._cancellable);
 
     logDev("Refreshing usage data...");
 
@@ -915,9 +930,7 @@ export default class CodexBarExtension extends Extension {
         const usageText =
           formatPanelText(entry.data?.usage, displayMode, elapsed, _) || "";
         if (showLogos) {
-          const logo = this._getProviderLogo(
-            provider.id || provider.name.toLowerCase()
-          );
+          const logo = this._getProviderLogo(provider.id, provider.name);
           if (logo) {
             logo.set_style_class_name("codexbar-panel-logo");
             segment.add_child(logo);
@@ -1772,6 +1785,8 @@ export default class CodexBarExtension extends Extension {
 
   /**
    * Get a provider logo as an St.Icon.
+   * Art comes from the ACP registry; providers the registry does not list yet
+   * still use the bundled SVGs.
    * @param {string} providerId
    * @param {string} [providerName]
    * @returns {St.Icon|null}
@@ -1779,24 +1794,31 @@ export default class CodexBarExtension extends Extension {
   _getProviderLogo(providerId, providerName = "") {
     if (!providerId && !providerName) return null;
 
+    const agent = this._logos?.agent(providerId, providerName);
+    if (agent) {
+      // Download on first use; ensureIcon revalidates stale icons in the
+      // background and calls back into _updateUI when new art arrives.
+      this._logos.ensureIcon(agent, this._cancellable);
+      const path = this._logos.iconPath(agent);
+      if (path)
+        return new St.Icon({
+          gicon: Gio.Icon.new_for_string(path),
+          icon_size: 16,
+          style_class: "codexbar-panel-logo",
+        });
+    }
+
     // Normalize ID and name: lowercase and replace spaces with dashes
     const candidates = [
       (providerId || "").toLowerCase().replace(/\s+/g, "-"),
       (providerName || "").toLowerCase().replace(/\s+/g, "-"),
     ].filter((c) => c.length > 0);
 
-    // Known provider keys for fallback matching of custom or renamed providers
-    // (e.g. a custom "Codex CLI" provider still shows the Codex logo).
+    // Only the providers missing from the registry are still bundled.
     const knownKeys = [
-      "codex",
-      "claude",
-      "gemini",
       "deepseek",
-      "copilot",
       "openrouter",
       "perplexity",
-      "mistral",
-      "antigravity",
       "ollama",
     ];
 

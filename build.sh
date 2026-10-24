@@ -13,6 +13,8 @@ gnome-extensions pack \
     --extra-source=usageApi.js \
     --extra-source=providerSources.js \
     --extra-source=localize.js \
+    --extra-source=logos.js \
+    --extra-source=logoMatch.js \
     --extra-source=stylesheet.css \
     --extra-source=secret.js \
     --extra-source=core/ \

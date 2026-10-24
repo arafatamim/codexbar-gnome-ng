@@ -142,6 +142,12 @@ fill with remaining or used quota, following the display mode, and are drawn in
 the panel's own text colour, so they stay monochrome (white on dark, black on
 light).
 
+Provider logos come from the [ACP agent registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
+matched against the provider id or name, so adding a provider does not mean
+shipping another icon. They are cached under `~/.cache/codexbar/logos` and
+revalidated monthly. DeepSeek, OpenRouter, Perplexity and Ollama are not in the
+registry and still use the icons bundled with the extension.
+
 
 
 ## License

@@ -24,6 +24,7 @@ import {
   buildCliCommand,
   parseGeneratedCommand,
 } from "./providerSources.js";
+import { matchAgent } from "./logoMatch.js";
 
 const client = new UsageApiClient();
 
@@ -1077,3 +1078,32 @@ if (JSON.stringify(textLabels) !== JSON.stringify(["Session", "Weekly"])) {
   throw new Error(`Text label fallback: got ${JSON.stringify(textLabels)}`);
 }
 console.log("✓ Window labels are read from the CLI JSON, with a text fallback that skips Pace");
+
+// The ACP registry names agents its own way; provider ids must still resolve.
+const registryAgents = [
+  { id: "claude-acp", name: "Claude Agent", icon: "https://x/claude.svg" },
+  { id: "codex-acp", name: "Codex", icon: "https://x/codex.svg" },
+  { id: "github-copilot-cli", name: "Copilot", icon: "https://x/copilot.svg" },
+  { id: "opencode", name: "OpenCode", icon: "https://x/opencode.svg" },
+  { id: "opencode-v2", name: "OpenCode V2", icon: "https://x/opencode-v2.svg" },
+  { id: "goose", name: "goose", icon: "https://x/goose.svg" },
+  { id: "no-icon-agent", name: "No Icon" },
+];
+const expectAgent = (id, name, expected) => {
+  const agent = matchAgent(registryAgents, id, name);
+  const actual = agent?.id ?? null;
+  if (actual !== expected)
+    throw new Error(`matchAgent(${id}, ${name}) => ${actual}, expected ${expected}`);
+};
+expectAgent("claude", "Claude", "claude-acp");
+expectAgent("codex", "Codex", "codex-acp");
+expectAgent("copilot", "Copilot", "github-copilot-cli");
+// "opencode" is closer than "opencode-v2" for an OpenCode Go provider.
+expectAgent("opencodego", "OpenCode Go", "opencode");
+// Entries without an icon are unusable.
+expectAgent("noicon", "No Icon", null);
+// Two-letter names are too ambiguous to match.
+expectAgent("go", "Go", null);
+// A provider absent from the registry yields nothing.
+expectAgent("deepseek", "DeepSeek", null);
+console.log("✓ Provider logos resolve against the ACP registry by fuzzy id/name match");
