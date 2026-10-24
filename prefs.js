@@ -1,16 +1,13 @@
-
 import Gio from "gi://Gio";
-import GioUnix from "gi://GioUnix";
 import GLib from "gi://GLib";
 import GObject from "gi://GObject";
 import Gtk from "gi://Gtk";
 import Adw from "gi://Adw";
 import { ExtensionPreferences } from "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js";
-import { applyLanguage, tr as _ } from "./localize.js";
+import { applyLanguage, formatText, tr as _ } from "./localize.js";
 import {
   storeToken,
   loadToken,
-  clearToken,
   nullTokenSchema,
 } from "./secret.js";
 import {
@@ -20,6 +17,10 @@ import {
   DIRECT_API,
   parseGeneratedCommand,
 } from "./providerSources.js";
+
+const CONTACT_EMAIL = "hi@inled.es";
+const COOKIE_IMPORTER_COMMAND =
+  "mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-cookie-importer -o ~/.local/bin/codexbar-cookie-importer && chmod +x ~/.local/bin/codexbar-cookie-importer";
 
 /**
  * Human label for a source. Looked up lazily so gettext runs after the
@@ -40,8 +41,12 @@ const sourceLabel = (source) =>
   })[source] || source;
 
 /**
+ * Give an icon-only Gtk.Button an accessible name as well as a tooltip.
+ * @param {Gtk.Button} button
+ * @param {string} label
+ */
+/**
  * Predefined providers list.
- * Lista de proveedores predefinidos.
  *
  * `supportsDirectApi` marks the providers this extension can query itself with
  * a keyring cookie; the rest reach their source through codexbar-cli.
@@ -67,7 +72,7 @@ const PREDEFINED_PROVIDERS = [
     useApi: false,
     defaultCommand: "codexbar --provider claude --source cli --format json",
   },
-    {
+  {
     id: "antigravity",
     name: "Antigravity",
     useApi: false,
@@ -117,21 +122,20 @@ const PREDEFINED_PROVIDERS = [
  */
 const CodexBarPrefsPage = GObject.registerClass(
   class CodexBarPrefsPage extends Adw.PreferencesPage {
-    _init(settings, extensionPath = null) {
+    _init(settings) {
       super._init({
         title: _("General"),
-        icon_name: "dialog-information-symbolic",
+        icon_name: "preferences-system-symbolic",
       });
 
       this._settings = settings;
-      this._extensionPath = extensionPath;
       this._providerRows = [];
 
       this.add(this._buildSettingsGroup());
       this.add(this._buildProvidersGroup());
-      this.add(this._buildDeveloperGroup());
-      this.add(this._buildContributeGroup());
       this.add(this._buildMaintenanceGroup());
+      this.add(this._buildContributeGroup());
+      this.add(this._buildDeveloperGroup());
 
       this.connect("destroy", () => {
         this._settings = null;
@@ -140,73 +144,120 @@ const CodexBarPrefsPage = GObject.registerClass(
     }
 
     /**
-     * From here I can pass a simulated codexbar-cli output and thus test providers that I don't have.
+     * Show a simple informational or error alert.
+     * @param {string} heading
+     * @param {string} body
+     */
+    _showMessage(heading, body) {
+      const root = this.get_root();
+      if (!root) return;
+
+      const dialog = new Adw.AlertDialog({ heading, body });
+      dialog.add_response("close", _("Close"));
+      dialog.set_default_response("close");
+      dialog.set_close_response("close");
+      dialog.present(root);
+    }
+
+    /**
+     * Add a standard link row with a chevron to a preferences group.
+     * @param {Adw.PreferencesGroup} group
+     * @param {{title: string, subtitle: string, icon: string, uri: string}} row
+     * @returns {Adw.ActionRow}
+     */
+    _addLinkRow(group, { title, subtitle, icon, uri }) {
+      const row = new Adw.ActionRow({ title, subtitle, activatable: true });
+      row.add_prefix(new Gtk.Image({ icon_name: icon }));
+      row.add_suffix(
+        new Gtk.Image({
+          icon_name: "go-next-symbolic",
+          css_classes: ["dim-label"],
+        })
+      );
+      row.connect("activated", () => {
+        Gio.AppInfo.launch_default_for_uri(uri, null);
+      });
+      group.add(row);
+      return row;
+    }
+
+    /**
+     * Build the developer/testing group. It stays collapsed and last, since
+     * it is only useful when the user is working on provider rendering.
      */
     _buildDeveloperGroup() {
       const group = new Adw.PreferencesGroup({
-        title: _("Developer & Testing Options"),
-        description: _(
-          "Simulate custom CLI outputs and view debug logs.",
-        ),
+        title: _("Developer and Testing"),
+        description: _("Simulate CLI output to check provider rendering."),
       });
 
-      const enabledRow = new Adw.SwitchRow({
+      const enabledRow = new Adw.ExpanderRow({
         title: _("Test with Custom CLI Output"),
         subtitle: _(
-          "Simulate Codexbar-CLI outputs to test providers or other things and see how the extension renders the data",
+          "Use a saved JSON payload instead of running the configured providers."
         ),
+        expanded: false,
+      });
+
+      const enabledSwitch = new Gtk.Switch({
         active: this._settings.get_boolean("dev-custom-output-enabled"),
+        valign: Gtk.Align.CENTER,
       });
       this._settings.bind(
         "dev-custom-output-enabled",
-        enabledRow,
+        enabledSwitch,
         "active",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
+      enabledRow.add_suffix(enabledSwitch);
       group.add(enabledRow);
 
       const providerNameRow = new Adw.EntryRow({
         title: _("Simulated Provider Name"),
-        text: this._settings.get_string("dev-custom-output-provider-name") || "Mock Provider",
       });
+      providerNameRow.set_text(
+        this._settings.get_string("dev-custom-output-provider-name") ||
+          "Mock Provider"
+      );
       this._settings.bind(
         "dev-custom-output-provider-name",
         providerNameRow,
         "text",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
-      group.add(providerNameRow);
+      enabledRow.add_row(providerNameRow);
 
       const jsonRow = new Adw.ActionRow({
-        title: _("Codexbar-CLI custom output"),
-        subtitle: _("Paste the raw JSON output to test"),
+        title: _("JSON Output"),
+        subtitle: _("Paste the raw codexbar-cli JSON output to test."),
       });
-      
+
       const scrolled = new Gtk.ScrolledWindow({
         min_content_height: 120,
         hexpand: true,
         vexpand: false,
       });
       scrolled.set_has_frame(true);
-      
+
       const jsonView = new Gtk.TextView({
         monospace: true,
         wrap_mode: Gtk.WrapMode.WORD,
       });
       jsonView.get_buffer().set_text(
         this._settings.get_string("dev-custom-output-json") || "[]",
-        -1,
+        -1
       );
       jsonView.get_buffer().connect("changed", () => {
         const buffer = jsonView.get_buffer();
-        const start = buffer.get_start_iter();
-        const end = buffer.get_end_iter();
-        const text = buffer.get_text(start, end, true).trim();
-        this._settings.set_string("dev-custom-output-json", text);
+        const text = buffer.get_text(
+          buffer.get_start_iter(),
+          buffer.get_end_iter(),
+          true
+        );
+        this._settings.set_string("dev-custom-output-json", text.trim());
       });
-
       scrolled.set_child(jsonView);
-      
+
       const jsonBox = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
         spacing: 6,
@@ -216,185 +267,87 @@ const CodexBarPrefsPage = GObject.registerClass(
         margin_end: 8,
       });
       jsonBox.append(scrolled);
-      
       jsonRow.add_suffix(jsonBox);
-      group.add(jsonRow);
+      enabledRow.add_row(jsonRow);
 
       return group;
     }
 
     /**
      * Build the contribute and contact group.
-     * Construye el grupo de contribución y contacto.
      */
     _buildContributeGroup() {
       const group = new Adw.PreferencesGroup({
-        title: _("Contribute & Contact"),
-        description: _(
-          "Enjoy the community of Codexbar contributors and other Inled projects. We are waiting for you!",
-        ),
+        title: _("Contribute and Contact"),
+        description: _("Meet other CodexBar users and Inled projects."),
       });
 
-      const prRow = new Adw.ActionRow({
+      this._addLinkRow(group, {
         title: _("Add a New Provider"),
-        subtitle: _(
-          "Help the community by submitting a Pull Request on GitHub",
-        ),
+        subtitle: _("Submit a pull request on GitHub."),
+        icon: "web-browser-symbolic",
+        uri: "https://github.com/InledGroup/codexbar-gnome",
       });
-      prRow.add_prefix(new Gtk.Image({ icon_name: "window-new-symbolic" }));
 
-      const prBtn = new Gtk.Button({
-        icon_name: "go-next-symbolic",
-        valign: Gtk.Align.CENTER,
-        css_classes: ["flat"],
-      });
-      prBtn.connect("clicked", () => {
-        Gio.AppInfo.launch_default_for_uri(
-          "https://github.com/InledGroup/codexbar-gnome",
-          null,
-        );
-      });
-      prRow.add_suffix(prBtn);
-      group.add(prRow);
-
-      const reviewRow = new Adw.ActionRow({
+      this._addLinkRow(group, {
         title: _("Leave a Review"),
-        subtitle: _(
-          "Rate the extension on EGO or share on social media.",
-        ),
+        subtitle: _("Rate the extension on GNOME Extensions."),
+        icon: "starred-symbolic",
+        uri: "https://extensions.gnome.org/extension/9841/codexbar/",
       });
-      reviewRow.add_prefix(new Gtk.Image({ icon_name: "starred-symbolic" }));
 
-      const reviewBtn = new Gtk.Button({
-        icon_name: "go-next-symbolic",
-        valign: Gtk.Align.CENTER,
-        css_classes: ["flat"],
-      });
-      reviewBtn.connect("clicked", () => {
-        Gio.AppInfo.launch_default_for_uri(
-          "https://extensions.gnome.org/extension/9841/codexbar/",
-          null,
-        );
-      });
-      reviewRow.add_suffix(reviewBtn);
-      group.add(reviewRow);
-
-      const contactRow = new Adw.ActionRow({
+      this._addLinkRow(group, {
         title: _("Contact Inled"),
-        subtitle: _("Questions? Suggestions? Write to us at hi@inled.es"),
+        subtitle: _("Questions or suggestions? Write to us."),
+        icon: "mail-message-new-symbolic",
+        uri: `mailto:${CONTACT_EMAIL}`,
       });
-      contactRow.add_prefix(
-        new Gtk.Image({ icon_name: "mail-message-new-symbolic" }),
-      );
 
-      const contactBtn = new Gtk.Button({
-        icon_name: "go-next-symbolic",
-        valign: Gtk.Align.CENTER,
-        css_classes: ["flat"],
-      });
-      contactBtn.connect("clicked", () => {
-        Gio.AppInfo.launch_default_for_uri("mailto:hi@inled.es", null);
-      });
-      contactRow.add_suffix(contactBtn);
-      group.add(contactRow);
-
-      const webRow = new Adw.ActionRow({
+      this._addLinkRow(group, {
         title: _("Visit inled.es"),
-        subtitle: _(
-          "Discover more tools and projects that might interest you!",
-        ),
+        subtitle: _("Discover more tools and projects."),
+        icon: "web-browser-symbolic",
+        uri: "https://inled.es",
       });
-      webRow.add_prefix(new Gtk.Image({ icon_name: "web-browser-symbolic" }));
 
-      const webBtn = new Gtk.Button({
-        icon_name: "go-next-symbolic",
-        valign: Gtk.Align.CENTER,
-        css_classes: ["suggested-action"],
-      });
-      webBtn.connect("clicked", () => {
-        Gio.AppInfo.launch_default_for_uri("https://inled.es", null);
-      });
-      webRow.add_suffix(webBtn);
-      group.add(webRow);
-
-      const socialRow = new Adw.ActionRow({
+      const socialRow = new Adw.ExpanderRow({
         title: _("Join the Community"),
-        subtitle: _("¡We have new Discord and Matrix channels!"),
+        subtitle: _("Follow the project on your preferred platform."),
       });
       socialRow.add_prefix(
-        new Gtk.Image({ icon_name: "system-users-symbolic" }),
+        new Gtk.Image({ icon_name: "system-users-symbolic" })
       );
 
-      const socialBox = new Gtk.Box({
-        orientation: Gtk.Orientation.HORIZONTAL,
-        spacing: 12,
-        valign: Gtk.Align.CENTER,
-      });
-
-      const createSocialBtn = (name, url, tooltip) => {
-        const iconPath = GLib.build_filenamev([
-          this._extensionPath,
-          "media",
-          "logos",
-          `${name}-symbolic.svg`,
-        ]);
-        const btn = new Gtk.Button({
-          css_classes: ["flat"],
-          tooltip_text: tooltip,
+      const addSocialRow = (title, uri) => {
+        const row = new Adw.ActionRow({ title, activatable: true });
+        row.add_suffix(
+          new Gtk.Image({
+            icon_name: "go-next-symbolic",
+            css_classes: ["dim-label"],
+          })
+        );
+        row.connect("activated", () => {
+          Gio.AppInfo.launch_default_for_uri(uri, null);
         });
-        if (GLib.file_test(iconPath, GLib.FileTest.EXISTS)) {
-          const gicon = Gio.Icon.new_for_string(iconPath);
-          btn.set_child(new Gtk.Image({ gicon: gicon }));
-        } else {
-          btn.set_label(tooltip);
-        }
-        btn.connect("clicked", () => {
-          Gio.AppInfo.launch_default_for_uri(url, null);
-        });
-        return btn;
+        socialRow.add_row(row);
       };
 
-      socialBox.append(
-        createSocialBtn(
-          "discord",
-          "https://discord.com/invite/PSeTkDMnr",
-          "Discord",
-        ),
+      addSocialRow("Discord", "https://discord.com/invite/PSeTkDMnr");
+      addSocialRow(
+        "Matrix",
+        "https://matrix.to/#/!POXBFohLnmrKwRBxTi:matrix.org?via=matrix.org"
       );
-      socialBox.append(
-        createSocialBtn(
-          "matrix",
-          "https://matrix.to/#/!POXBFohLnmrKwRBxTi:matrix.org?via=matrix.org",
-          "Matrix",
-        ),
-      );
-      socialBox.append(
-        createSocialBtn(
-          "telegram",
-          "https://link.inled.es/telegram",
-          "Telegram",
-        ),
-      );
-      socialBox.append(
-        createSocialBtn(
-          "youtube",
-          "https://www.youtube.com/@inledgroup",
-          "YouTube",
-        ),
-      );
-      socialBox.append(
-        createSocialBtn("x", "https://x.com/inledgroup", "X (Twitter)"),
-      );
+      addSocialRow("Telegram", "https://link.inled.es/telegram");
+      addSocialRow("YouTube", "https://www.youtube.com/@inledgroup");
+      addSocialRow("X (Twitter)", "https://x.com/inledgroup");
 
-      socialRow.add_suffix(socialBox);
       group.add(socialRow);
 
       return group;
     }
 
     /**
-     * Build the general settings group (Refresh interval, Display mode).
-     * Construye el grupo de ajustes generales (Intervalo de refresco, Modo de visualización).
+     * Build the general settings group.
      */
     _buildSettingsGroup() {
       const group = new Adw.PreferencesGroup({
@@ -402,7 +355,9 @@ const CodexBarPrefsPage = GObject.registerClass(
       });
 
       const refreshRow = new Adw.SpinRow({
-        title: _("Refresh Interval (minutes)"),
+        title: _("Refresh Interval"),
+        subtitle: _("Minutes between automatic refreshes."),
+        digits: 0,
         adjustment: new Gtk.Adjustment({
           lower: 1,
           upper: 1440,
@@ -414,12 +369,13 @@ const CodexBarPrefsPage = GObject.registerClass(
         "refresh-interval",
         refreshRow.adjustment,
         "value",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
       group.add(refreshRow);
 
       const displayModeRow = new Adw.ComboRow({
         title: _("Display Mode"),
+        subtitle: _("Show quota used or quota remaining."),
         model: new Gtk.StringList({
           strings: [_("Used"), _("Remaining")],
         }),
@@ -428,7 +384,7 @@ const CodexBarPrefsPage = GObject.registerClass(
       displayModeRow.connect("notify::selected", () => {
         this._settings.set_string(
           "display-mode",
-          displayModeRow.selected === 0 ? "used" : "remaining",
+          displayModeRow.selected === 0 ? "used" : "remaining"
         );
       });
       group.add(displayModeRow);
@@ -439,9 +395,10 @@ const CodexBarPrefsPage = GObject.registerClass(
         model: new Gtk.StringList({
           strings: ["English", "Español", "Português (Brasil)"],
         }),
-        selected: { en: 0, es: 1, pt_BR: 2 }[
-          this._settings.get_string("language")
-        ] ?? 0,
+        selected:
+          { en: 0, es: 1, pt_BR: 2 }[
+            this._settings.get_string("language")
+          ] ?? 0,
       });
       languageRow.connect("notify::selected", () => {
         const lang = ["en", "es", "pt_BR"][languageRow.selected] ?? "en";
@@ -452,38 +409,34 @@ const CodexBarPrefsPage = GObject.registerClass(
 
       const showLogosRow = new Adw.SwitchRow({
         title: _("Show Provider Logos"),
-        subtitle: _(
-          "Display the logo of each AI provider in the selection tabs",
-        ),
+        subtitle: _("Display provider logos in the top bar."),
         active: this._settings.get_boolean("show-logos"),
       });
       this._settings.bind(
         "show-logos",
         showLogosRow,
         "active",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
       group.add(showLogosRow);
 
       const showPacingInfoRow = new Adw.SwitchRow({
         title: _("Show Usage Pacing"),
-        subtitle: _(
-          "Display weekly pacing estimates (reserve or over pace) for large windows",
-        ),
+        subtitle: _("Show reserve or over-pace estimates for large windows."),
         active: this._settings.get_boolean("show-pacing-info"),
       });
       this._settings.bind(
         "show-pacing-info",
         showPacingInfoRow,
         "active",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
       group.add(showPacingInfoRow);
 
       const showProviderDetailsRow = new Adw.SwitchRow({
         title: _("Show Provider Details"),
         subtitle: _(
-          "Display the extra detail sections reported by the provider CLI (credits, spend history, rate limits)",
+          "Show extra detail sections reported by the provider CLI."
         ),
         active: this._settings.get_boolean("show-provider-details"),
       });
@@ -491,7 +444,7 @@ const CodexBarPrefsPage = GObject.registerClass(
         "show-provider-details",
         showProviderDetailsRow,
         "active",
-        Gio.SettingsBindFlags.DEFAULT,
+        Gio.SettingsBindFlags.DEFAULT
       );
       group.add(showProviderDetailsRow);
 
@@ -500,13 +453,12 @@ const CodexBarPrefsPage = GObject.registerClass(
 
     /**
      * Build the AI providers configuration group.
-     * Builds the AI providers settings group.
      */
     _buildProvidersGroup() {
       const group = new Adw.PreferencesGroup({
         title: _("AI Providers"),
         description: _(
-          "Enable providers and pick how each one connects. Direct API uses session cookies from your keyring; the other choices run codexbar-cli with that --source. Antigravity also needs the plugin.",
+          "Enable providers and choose how each one connects. Direct API uses a session cookie from your keyring; the other options run codexbar-cli."
         ),
       });
 
@@ -518,10 +470,7 @@ const CodexBarPrefsPage = GObject.registerClass(
         activeProviders = [];
       }
 
-      const adopted = adoptCustomProviders(
-        activeProviders,
-        PREDEFINED_PROVIDERS,
-      );
+      const adopted = adoptCustomProviders(activeProviders, PREDEFINED_PROVIDERS);
       // Persist straight away rather than waiting for the user to touch a
       // control: until this lands in settings the panel keeps reading the old
       // custom-* ids, and those are what cost the row its logo.
@@ -534,22 +483,20 @@ const CodexBarPrefsPage = GObject.registerClass(
       const saveProviders = async () => {
         const newProviders = [];
         for (const row of this._providerRows) {
-          if (row._enabledSwitch.active) {
-            newProviders.push({
-              id: row._id,
-              name: row._name,
-              command: row._commandEntry.get_text(),
-              useApi: row._useApi,
-              ...(row._source ? { source: row._source } : {}),
-              ...(row._panelCheck.active ? { showInPanel: true } : {}),
-            });
+          if (!row._enabledSwitch.active) continue;
 
-            if (row._useApi) {
-              const token = row._tokenEntry.get_text();
-              if (token) {
-                await storeToken(row._id, token);
-              }
-            }
+          newProviders.push({
+            id: row._id,
+            name: row._name,
+            command: row._commandEntry.get_text(),
+            useApi: row._useApi,
+            ...(row._source ? { source: row._source } : {}),
+            ...(row._panelCheck.active ? { showInPanel: true } : {}),
+          });
+
+          if (row._useApi) {
+            const token = row._tokenEntry?.get_text();
+            if (token) await storeToken(row._id, token);
           }
         }
         this._settings.set_string("providers", JSON.stringify(newProviders));
@@ -559,7 +506,7 @@ const CodexBarPrefsPage = GObject.registerClass(
         const isEnabled = activeData !== null;
         const isPredefined = PREDEFINED_PROVIDERS.some((p) => p.id === info.id);
 
-        // Handle command defaults and migrations
+        // Handle command defaults and migrations.
         let command = info.defaultCommand || "";
         if (activeData) {
           if (
@@ -577,7 +524,7 @@ const CodexBarPrefsPage = GObject.registerClass(
         const row = new Adw.ExpanderRow({
           title: info.name,
           subtitle: isEnabled ? _("Enabled") : _("Disabled"),
-          expanded: isEnabled,
+          expanded: false,
         });
 
         row._id = activeData ? activeData.id : info.id;
@@ -600,254 +547,223 @@ const CodexBarPrefsPage = GObject.registerClass(
           parseGeneratedCommand(info.defaultCommand)?.source ||
           "cli";
 
-        if (isPredefined) {
-          row._source = sourceOptions.includes(storedSource)
+        row._source = isPredefined
+          ? sourceOptions.includes(storedSource)
             ? storedSource
-            : sourceOptions[0];
-        } else {
-          row._source = null;
-        }
+            : sourceOptions[0]
+          : null;
         row._useApi = row._source === DIRECT_API;
 
         const enabledSwitch = new Gtk.Switch({
           active: isEnabled,
           valign: Gtk.Align.CENTER,
         });
+        enabledSwitch.update_property(
+          [Gtk.AccessibleProperty.LABEL],
+          [info.name]
+        );
         enabledSwitch.connect("notify::active", () => {
-          row.set_subtitle(enabledSwitch.active ? _("Enabled") : _("Disabled"));
+          row.set_subtitle(
+            enabledSwitch.active ? _("Enabled") : _("Disabled")
+          );
           row.expanded = enabledSwitch.active;
           saveProviders();
         });
         row.add_suffix(enabledSwitch);
         row._enabledSwitch = enabledSwitch;
 
-        const box = new Gtk.Box({
-          orientation: Gtk.Orientation.VERTICAL,
-          spacing: 6,
-          margin_top: 12,
-          margin_bottom: 12,
-          margin_start: 12,
-          margin_end: 12,
-        });
-
-        const panelCheck = new Gtk.CheckButton({
-          label: _("Show in panel"),
-          tooltip_text: _(
-            "Show this provider's usage windows as text in the top bar",
-          ),
+        const panelRow = new Adw.SwitchRow({
+          title: _("Show in Panel"),
+          subtitle: _("Show this provider's usage in the top bar."),
           active: !!activeData?.showInPanel,
         });
-        panelCheck.connect("toggled", saveProviders);
-        row._panelCheck = panelCheck;
-        box.append(panelCheck);
+        panelRow.connect("notify::active", saveProviders);
+        row._panelCheck = panelRow;
+        row.add_row(panelRow);
 
-        // Show the section the chosen source needs, and keep the command in
-        // sync with it. A command the user has hand-edited is left alone -
-        // only one we generated (or an empty one) gets rewritten.
+        let tokenEntry = null;
+        let importRow = null;
+
         const applySource = (source, { rewriteCommand = true } = {}) => {
           row._source = source;
           row._useApi = source === DIRECT_API;
-          apiBox.visible = row._useApi;
-          cliBox.visible = !row._useApi;
+          if (tokenEntry) tokenEntry.visible = row._useApi;
+          if (importRow) importRow.visible = row._useApi;
+          commandEntry.visible = !row._useApi;
 
           if (rewriteCommand && !row._useApi) {
-            const current = row._commandEntry.get_text();
+            const current = commandEntry.get_text();
             if (!current.trim() || parseGeneratedCommand(current)) {
-              row._commandEntry.set_text(buildCliCommand(info.id, source));
+              commandEntry.set_text(buildCliCommand(info.id, source));
             }
           }
         };
 
         if (isPredefined) {
-          const sourceRow = new Gtk.Box({ spacing: 6 });
-          sourceRow.append(
-            new Gtk.Label({
-              label: _("Connection:"),
-              xalign: 0,
-              valign: Gtk.Align.CENTER,
-            }),
-          );
-
-          const sourceDropdown = new Gtk.DropDown({
+          const sourceRow = new Adw.ComboRow({
+            title: _("Connection"),
             model: Gtk.StringList.new(sourceOptions.map(sourceLabel)),
-            selected: sourceOptions.indexOf(row._source),
-            valign: Gtk.Align.CENTER,
-            hexpand: true,
+            selected: Math.max(0, sourceOptions.indexOf(row._source)),
           });
-          sourceDropdown.connect("notify::selected", () => {
-            const picked = sourceOptions[sourceDropdown.get_selected()];
+          sourceRow.connect("notify::selected", () => {
+            const picked = sourceOptions[sourceRow.selected];
             if (!picked || picked === row._source) return;
             applySource(picked);
             saveProviders();
           });
-
-          sourceRow.append(sourceDropdown);
-          box.append(sourceRow);
+          row.add_row(sourceRow);
         }
 
-        const apiBox = new Gtk.Box({
-          orientation: Gtk.Orientation.VERTICAL,
-          spacing: 6,
-        });
-        // Built only where Direct API is reachable, so the other rows don't
-        // each fire a pointless keyring lookup for a token they can't use.
         if (info.supportsDirectApi) {
-          // For Direct API providers like Codex
-          // For direct API providers like Codex
-          const tokenEntry = new Gtk.PasswordEntry({
-            placeholder_text: _(
-              "Authentication Cookie (starts with __Secure...)",
-            ),
+          tokenEntry = new Adw.PasswordEntryRow({
+            title: _("Session Cookie"),
           });
-          loadToken(row._id).then((token) => {
-            if (token) tokenEntry.set_text(token);
-          }).catch(() => {});
-
-          tokenEntry.connect("changed", async () => {
+          loadToken(row._id)
+            .then((token) => {
+              if (token) tokenEntry.set_text(token);
+            })
+            .catch(() => {});
+          tokenEntry.connect("notify::text", async () => {
             await storeToken(row._id, tokenEntry.get_text().trim());
             saveProviders();
           });
           row._tokenEntry = tokenEntry;
+          row.add_row(tokenEntry);
 
-          const importBtn = new Gtk.Button({
-            label: _("Auto-Login from Browser"),
-            margin_top: 6,
-            tooltip_text: _(
-              "Uses a local Python script to extract cookies from Chrome/Brave for this provider.",
-            ),
+          importRow = new Adw.ActionRow({
+            title: _("Import from Browser"),
+            subtitle: _("Extract the session cookie automatically."),
           });
 
           const spinner = new Gtk.Spinner({
             valign: Gtk.Align.CENTER,
-            margin_start: 6,
+            visible: false,
           });
-          const btnBox = new Gtk.Box({ spacing: 6, margin_top: 6 });
-          btnBox.append(importBtn);
-          btnBox.append(spinner);
-
+          const importBtn = new Gtk.Button({
+            label: _("Import"),
+            valign: Gtk.Align.CENTER,
+          });
           importBtn.connect("clicked", () => {
             importBtn.sensitive = false;
+            spinner.visible = true;
             spinner.start();
             this._importFromBrowser(row._id, tokenEntry, () => {
               importBtn.sensitive = true;
               spinner.stop();
+              spinner.visible = false;
             });
           });
 
-          apiBox.append(
-            new Gtk.Label({
-              label: _("Session Cookies:"),
-              xalign: 0,
-              css_classes: ["caption"],
-            }),
-          );
-          apiBox.append(tokenEntry);
-          apiBox.append(btnBox);
-          apiBox.append(
-            new Gtk.Label({
-              label: _("Manual entry: Paste your session cookies here."),
-              xalign: 0,
-              css_classes: ["dim-label"],
-            }),
-          );
+          importRow.add_suffix(spinner);
+          importRow.add_suffix(importBtn);
+          row.add_row(importRow);
         }
 
-        const cliBox = new Gtk.Box({
-          orientation: Gtk.Orientation.VERTICAL,
-          spacing: 6,
+        const commandEntry = new Adw.EntryRow({
+          title: _("CLI Command"),
+          text: command,
         });
-        {
-          const commandEntry = new Gtk.Entry({
-            placeholder_text: _("CLI Command (e.g. codexbar --provider ...)"),
-            text: command,
+        commandEntry.connect("notify::text", saveProviders);
+        row._commandEntry = commandEntry;
+
+        if (isPredefined) {
+          const resetBtn = new Gtk.Button({
+            label: _("Reset"),
+            valign: Gtk.Align.CENTER,
+            css_classes: ["flat"],
           });
-          commandEntry.connect("changed", saveProviders);
-          row._commandEntry = commandEntry;
+          resetBtn.set_tooltip_text(_("Reset to the default command"));
+          resetBtn.connect("clicked", () => {
+            commandEntry.set_text(
+              row._source && row._source !== DIRECT_API
+                ? buildCliCommand(info.id, row._source)
+                : info.defaultCommand
+            );
+            saveProviders();
+          });
+          commandEntry.add_suffix(resetBtn);
+        }
+        row.add_row(commandEntry);
 
-          const labelBox = new Gtk.Box({ spacing: 6 });
-          labelBox.append(
-            new Gtk.Label({ label: _("CLI Command:"), xalign: 0 }),
-          );
-
-          if (isPredefined) {
-            const resetBtn = new Gtk.Button({
-              label: _("Reset Default"),
-              valign: Gtk.Align.CENTER,
-              css_classes: ["flat"],
+        if (info.id === "antigravity") {
+          const hasLsof = !!GLib.find_program_in_path("lsof");
+          if (!hasLsof) {
+            let lsofCmd = "sudo apt install lsof";
+            if (GLib.find_program_in_path("pacman")) {
+              lsofCmd = "sudo pacman -S lsof";
+            } else if (GLib.find_program_in_path("dnf")) {
+              lsofCmd = "sudo dnf install lsof";
+            }
+            const hintRow = new Adw.ActionRow({
+              title: _("Missing Dependency: lsof"),
+              subtitle: formatText(_("Install it with: %s"), lsofCmd),
+              subtitle_lines: 2,
             });
-            resetBtn.connect("clicked", () => {
-              commandEntry.set_text(
-                row._source && row._source !== DIRECT_API
-                  ? buildCliCommand(info.id, row._source)
-                  : info.defaultCommand,
-              );
-              saveProviders();
-            });
-            labelBox.append(resetBtn);
+            hintRow.add_prefix(
+              new Gtk.Image({ icon_name: "dialog-warning-symbolic" })
+            );
+            row.add_row(hintRow);
           }
 
-          cliBox.append(labelBox);
-          cliBox.append(commandEntry);
-
-          if (info.id === "antigravity") {
-            const hasLsof = !!GLib.find_program_in_path("lsof");
-
-            if (!hasLsof) {
-              let lsofCmd = "sudo apt install lsof";
-              if (GLib.find_program_in_path("pacman")) {
-                lsofCmd = "sudo pacman -S lsof";
-              } else if (GLib.find_program_in_path("dnf")) {
-                lsofCmd = "sudo dnf install lsof";
-              }
-              const lsofLabel = new Gtk.Label({
-                label: _(
-                  `⚠️ Antigravity requires the 'lsof' utility to detect the local server ports. Run this command to install it:\n\n${lsofCmd}`,
-                ),
-                xalign: 0,
-                use_markup: false,
-                wrap: true,
-                css_classes: ["dim-label"],
-              });
-              lsofLabel.set_margin_top(6);
-              cliBox.append(lsofLabel);
-            }
-
-            // Antigravity SSL certificate setup instruction
-            const certLabel = new Gtk.Label({
-              label: _(
-                "💡 Antigravity requires a trusted local SSL certificate to work. So we have made a python script to help you do this in a single command:\n\npip install codexbar-ssl-helper && codexbar-ssl-helper",
+          if (
+            !GLib.file_test(
+              "/usr/local/share/ca-certificates/antigravity.crt",
+              GLib.FileTest.EXISTS
+            )
+          ) {
+            const certRow = new Adw.ActionRow({
+              title: _("Antigravity Certificate"),
+              subtitle: _(
+                "Antigravity needs a trusted local certificate. Install the helper from the README, then run codexbar-ssl-helper."
               ),
-              xalign: 0,
-              use_markup: false,
-              wrap: true,
-              css_classes: ["dim-label"],
+              subtitle_lines: 3,
             });
-            certLabel.set_margin_top(12);
-            cliBox.append(certLabel);
+            certRow.add_prefix(
+              new Gtk.Image({ icon_name: "dialog-information-symbolic" })
+            );
+            row.add_row(certRow);
           }
         }
-
-        box.append(apiBox);
-        box.append(cliBox);
-        // Visibility only: rewriting here would fire the entry's "changed"
-        // handler and save a half-built row list.
-        applySource(row._source, { rewriteCommand: false });
 
         if (!isPredefined) {
+          const deleteRow = new Adw.ActionRow({
+            title: _("Remove Provider"),
+            subtitle: _("This provider will be removed from the list."),
+          });
           const deleteBtn = new Gtk.Button({
-            label: _("Remove Provider"),
-            margin_top: 12,
+            label: _("Remove"),
+            valign: Gtk.Align.CENTER,
             css_classes: ["destructive-action"],
           });
           deleteBtn.connect("clicked", () => {
-            group.remove(row);
-            this._providerRows = this._providerRows.filter((r) => r !== row);
-            saveProviders();
+            const dialog = new Adw.AlertDialog({
+              heading: formatText(_("Remove %s?"), info.name),
+              body: _("This provider will be removed from the list."),
+            });
+            dialog.add_response("cancel", _("Cancel"));
+            dialog.add_response("remove", _("Remove"));
+            dialog.set_response_appearance(
+              "remove",
+              Adw.ResponseAppearance.DESTRUCTIVE
+            );
+            dialog.set_close_response("cancel");
+            dialog.connect("response", (d, response) => {
+              if (response !== "remove") return;
+              group.remove(row);
+              this._providerRows = this._providerRows.filter(
+                (r) => r !== row
+              );
+              saveProviders();
+            });
+            const root = this.get_root();
+            if (root) dialog.present(root);
           });
-          box.append(deleteBtn);
+          deleteRow.add_suffix(deleteBtn);
+          row.add_row(deleteRow);
         }
 
-        row.add_row(box);
+        applySource(row._source, { rewriteCommand: false });
+
         this._providerRows.push(row);
         return row;
       };
@@ -879,91 +795,92 @@ const CodexBarPrefsPage = GObject.registerClass(
                 useApi: p.useApi || false,
                 defaultCommand: p.command,
               },
-              p,
-            ),
+              p
+            )
           );
         }
       });
 
-      const addBtnRow = new Adw.ActionRow({
+      const addRow = new Adw.ButtonRow({
         title: _("Add Custom Provider"),
-        subtitle: _("The extension should parse it correctly."),
+        start_icon_name: "list-add-symbolic",
       });
 
-      const addBtn = new Gtk.Button({
-        icon_name: "list-add-symbolic",
-        valign: Gtk.Align.CENTER,
-        css_classes: ["suggested-action"],
-      });
-
-      addBtn.connect("clicked", () => {
-        const dialog = new Adw.MessageDialog({
+      addRow.connect("activated", () => {
+        const dialog = new Adw.AlertDialog({
           heading: _("New Provider"),
-          body: _("Enter the details for your custom AI provider."),
-          transient_for: this.get_root(),
-          modal: true,
+          body: _("Enter a name and the CLI command that returns usage JSON."),
         });
 
-        const content = new Gtk.Box({
-          orientation: Gtk.Orientation.VERTICAL,
-          spacing: 12,
+        const list = new Gtk.ListBox({
+          selection_mode: Gtk.SelectionMode.NONE,
+          css_classes: ["boxed-list"],
         });
+        const nameEntry = new Adw.EntryRow({ title: _("Provider Name") });
+        const cmdEntry = new Adw.EntryRow({ title: _("CLI Command") });
+        list.append(nameEntry);
+        list.append(cmdEntry);
+        dialog.set_extra_child(list);
 
-        const nameEntry = new Gtk.Entry({
-          placeholder_text: _("Provider Name (e.g. MyLocalModel)"),
-        });
-        content.append(nameEntry);
-
-        const cmdEntry = new Gtk.Entry({
-          placeholder_text: _("Command (e.g. codexbar --provider ...)"),
-        });
-        content.append(cmdEntry);
-
-        dialog.set_extra_child(content);
         dialog.add_response("cancel", _("Cancel"));
         dialog.add_response("add", _("Add"));
-        dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED);
+        dialog.set_response_appearance(
+          "add",
+          Adw.ResponseAppearance.SUGGESTED
+        );
+        dialog.set_default_response("add");
+        dialog.set_close_response("cancel");
+
+        const updateAddSensitivity = () => {
+          dialog.set_response_enabled(
+            "add",
+            !!nameEntry.get_text().trim() && !!cmdEntry.get_text().trim()
+          );
+        };
+        nameEntry.connect("notify::text", updateAddSensitivity);
+        cmdEntry.connect("notify::text", updateAddSensitivity);
+        updateAddSensitivity();
 
         dialog.connect("response", (d, response) => {
-          if (response === "add") {
-            const name = nameEntry.get_text().trim();
-            const cmd = cmdEntry.get_text().trim();
-            if (name && cmd) {
-              const newProvider = {
-                id: `custom-${Date.now()}`,
-                name: name,
-                command: cmd,
+          if (response !== "add") return;
+
+          const name = nameEntry.get_text().trim();
+          const cmd = cmdEntry.get_text().trim();
+          if (!name || !cmd) return;
+
+          const newProvider = {
+            id: `custom-${Date.now()}`,
+            name,
+            command: cmd,
+            useApi: false,
+          };
+          group.remove(addRow);
+          group.add(
+            createProviderRow(
+              {
+                id: newProvider.id,
+                name: newProvider.name,
                 useApi: false,
-              };
-              const row = createProviderRow(
-                {
-                  id: newProvider.id,
-                  name: newProvider.name,
-                  useApi: false,
-                  defaultCommand: newProvider.command,
-                },
-                newProvider,
-              );
-              group.add(row);
-              // Manually move it up if needed, but Adw.PreferencesGroup appends
-              // In GNOME 45+ we can't easily reorder children in PreferencesGroup
-              // without removing the button and re-adding it.
-              saveProviders();
-            }
-          }
+                defaultCommand: newProvider.command,
+              },
+              newProvider
+            )
+          );
+          group.add(addRow);
+          saveProviders();
         });
-        dialog.present();
+
+        const root = this.get_root();
+        if (root) dialog.present(root);
       });
 
-      addBtnRow.add_suffix(addBtn);
-      group.add(addBtnRow);
+      group.add(addRow);
 
       return group;
     }
 
     /**
-     * Build the maintenance/debug group.
-     * Construye el grupo de mantenimiento/depuración.
+     * Build the maintenance group.
      */
     _buildMaintenanceGroup() {
       const group = new Adw.PreferencesGroup({
@@ -972,10 +889,10 @@ const CodexBarPrefsPage = GObject.registerClass(
 
       const setupBtnRow = new Adw.ActionRow({
         title: _("Show Welcome Screen"),
-        subtitle: _("Reset first-run state"),
+        subtitle: _("Reset the first-run state and show setup in the menu."),
       });
       const setupBtn = new Gtk.Button({
-        icon_name: "help-about-symbolic",
+        label: _("Show"),
         valign: Gtk.Align.CENTER,
       });
       setupBtn.connect("clicked", () => {
@@ -988,12 +905,10 @@ const CodexBarPrefsPage = GObject.registerClass(
     }
 
     /**
-     * Import cookies from browser using local Python script.
-     * Importa cookies desde el navegador usando un script de Python local.
-     */
-    /**
-     * Import cookies from browser using local Python script.
-     * Importa cookies desde el navegador usando un script de Python local.
+     * Import cookies from the browser using the bundled helper.
+     * @param {string} providerId
+     * @param {Adw.PasswordEntryRow} tokenEntry
+     * @param {Function|null} callback
      */
     async _importFromBrowser(providerId, tokenEntry, callback = null) {
       const finish = () => {
@@ -1001,32 +916,19 @@ const CodexBarPrefsPage = GObject.registerClass(
       };
 
       const showError = (title, message) => {
-        const dialog = new Adw.MessageDialog({
-          heading: title,
-          body: message,
-          transient_for: this.get_root(),
-          modal: true,
-        });
-        dialog.add_response("ok", _("OK"));
-        dialog.present();
+        this._showMessage(title, message);
         finish();
       };
 
       const showMissingDialog = () => {
-        const dialog = new Adw.MessageDialog({
-          heading: _("Cookie Importer Missing"),
-          body: _(
-            "To import cookies automatically from your browser, please install the python dependency by running:\n\npip install codexbar-cookie-importer",
-          ),
-          transient_for: this.get_root(),
-          modal: true,
-        });
-        dialog.add_response("ok", _("OK"));
-        dialog.present();
+        this._showMessage(
+          _("Cookie Importer Missing"),
+          `${_("Install the helper by running:")}\n${COOKIE_IMPORTER_COMMAND}`
+        );
         finish();
       };
 
-      // Find the executable binary or fallback to python module
+      // Find the executable binary or the copy installed in ~/.local/bin.
       let argv = null;
       if (GLib.find_program_in_path("codexbar-cookie-importer")) {
         argv = ["codexbar-cookie-importer"];
@@ -1039,10 +941,12 @@ const CodexBarPrefsPage = GObject.registerClass(
         ]);
         if (GLib.file_test(localBin, GLib.FileTest.EXISTS)) {
           argv = [localBin];
-        } else {
-          // Fall back to the python module entry point
-          argv = ["/usr/bin/python3", "-m", "codexbar_cookie_importer"];
         }
+      }
+
+      if (!argv) {
+        showMissingDialog();
+        return;
       }
 
       if (providerId === "ollama") {
@@ -1051,7 +955,7 @@ const CodexBarPrefsPage = GObject.registerClass(
 
       try {
         const proc = new Gio.Subprocess({
-          argv: argv,
+          argv,
           flags:
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
         });
@@ -1067,8 +971,8 @@ const CodexBarPrefsPage = GObject.registerClass(
           showError(
             _("Timeout"),
             _(
-              "The cookie importer is taking too long. Please ensure your browser is closed and try again.",
-            ),
+              "The cookie importer is taking too long. Please ensure your browser is closed and try again."
+            )
           );
           return GLib.SOURCE_REMOVE;
         });
@@ -1083,8 +987,6 @@ const CodexBarPrefsPage = GObject.registerClass(
 
             if (timedOut) return;
 
-            // If the module is not found, python returns exit code 1 or 2 and No module named in stderr
-            // Python exits 1/2 with "No module named" on stderr when the module is missing
             if (
               !success &&
               stderr &&
@@ -1106,10 +1008,14 @@ const CodexBarPrefsPage = GObject.registerClass(
                 tokenEntry.set_text(result.cookie_header);
                 await storeToken(providerId, result.cookie_header);
 
-                const toast = new Adw.Toast({
-                  title: _("Cookies imported successfully!"),
-                });
-                this.get_root().add_toast(toast);
+                const root = this.get_root();
+                if (root) {
+                  root.add_toast(
+                    new Adw.Toast({
+                      title: _("Cookies imported successfully"),
+                    })
+                  );
+                }
                 finish();
               }
             } else {
@@ -1122,7 +1028,6 @@ const CodexBarPrefsPage = GObject.registerClass(
             }
           } catch (e) {
             if (!timedOut) {
-              // Check if it's a module not found issue
               if (e.message && e.message.includes("No module named")) {
                 showMissingDialog();
               } else {
@@ -1137,7 +1042,6 @@ const CodexBarPrefsPage = GObject.registerClass(
         showMissingDialog();
       }
     }
-
   }
 );
 
@@ -1157,7 +1061,7 @@ export default class CodexBarPreferences extends ExtensionPreferences {
           .get_child(`${domain}.mo`);
         return mo.query_exists(null) ? mo.load_contents(null)[1] : null;
       });
-      const page = new CodexBarPrefsPage(settings, this.path);
+      const page = new CodexBarPrefsPage(settings);
       window.add(page);
       return page;
     };
@@ -1172,7 +1076,7 @@ export default class CodexBarPreferences extends ExtensionPreferences {
       page = buildPage();
     });
 
-    // Null out the token schema when the preferences window closes
+    // Null out the token schema when the preferences window closes.
     window.connect("destroy", () => {
       destroyed = true;
       nullTokenSchema();
