@@ -35,6 +35,10 @@
  border-radius: 999px;
 }
 
+.codexbar-tab-row {
+ spacing: 2px;
+}
+
 .codexbar-tab:hover {
  background-color: rgba(127, 127, 127, 0.18);
 }

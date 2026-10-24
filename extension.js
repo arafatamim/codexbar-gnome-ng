@@ -309,10 +309,16 @@ export default class CodexBarExtension extends Extension {
 
     this._tabsBox = new St.BoxLayout({
       style_class: "codexbar-tabs",
-      orientation: Clutter.Orientation.HORIZONTAL,
+      orientation: Clutter.Orientation.VERTICAL,
       visible: false,
     });
     menu.box.add_child(this._tabsBox);
+
+    // The tabs are wider than the popup until they wrap, so lay them out again
+    // once the popup can be measured (it is not in the stage while closed).
+    menu.connect("open-state-changed", (m, open) => {
+      if (open) this._renderTabs(this._tabsBox.visible);
+    });
 
     this._contentSection = new PopupMenu.PopupMenuSection();
     menu.addMenuItem(this._contentSection);
@@ -1157,7 +1163,7 @@ export default class CodexBarExtension extends Extension {
     if (!show) return;
 
     const showLogos = this._settings.get_boolean("show-logos");
-    this._providers.forEach((provider, index) => {
+    const tabs = this._providers.map((provider, index) => {
       const button = new St.Button({
         style_class: "codexbar-tab",
         can_focus: true,
@@ -1178,20 +1184,100 @@ export default class CodexBarExtension extends Extension {
           row.add_child(logo);
         }
       }
-      row.add_child(
-        new St.Label({
-          text: provider.name,
-          y_align: Clutter.ActorAlign.CENTER,
-        })
-      );
+      const label = new St.Label({
+        text: provider.name,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      // Fallback for a name wider than the popup: the row layout then gives
+      // the label less than its preferred width, and it ends with an ellipsis
+      // instead of being cut mid-glyph.
+      label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+      row.add_child(label);
       button.set_child(row);
       button.connect("clicked", () => {
         if (index === this._activeProviderIndex) return;
         this._activeProviderIndex = index;
         this._updateUI();
       });
-      this._tabsBox.add_child(button);
+      return button;
     });
+
+    // Tabs are measured while parented, then moved into rows that fit the
+    // popup: a segmented control that clips its last label is unreadable, and
+    // a single row cannot hold four provider names. While the popup is closed
+    // it is not in the stage, so the names cannot be measured and the row is
+    // laid out again on open.
+    tabs.forEach((tab) => this._tabsBox.add_child(tab));
+    // Wrap against the popup's maximum width, which is independent of the
+    // current layout (the tabs' own width otherwise feeds back into it).
+    let available = 0;
+    if (this._tabsBox.get_stage()) {
+      const node = this._indicator.menu.box.get_theme_node();
+      const maxWidth = node.get_length("max-width");
+      const padding = this._tabsBox.get_theme_node().get_horizontal_padding();
+      available = (maxWidth > 0 ? maxWidth : this._indicator.menu.box.width) - padding;
+    }
+    const rows = [[]];
+    const rowWidths = [0];
+    const widths = new Map();
+    const labelWidths = new Map();
+    for (const tab of tabs) {
+      const width = available > 0 ? tab.get_preferred_width(-1)[1] : 0;
+      widths.set(tab, width);
+      if (available > 0) {
+        labelWidths.set(
+          tab,
+          tab.get_child().get_last_child().get_preferred_width(-1)[1]
+        );
+      }
+      this._tabsBox.remove_child(tab);
+      let index = rows.length - 1;
+      if (available > 0 && rows[index].length && rowWidths[index] + 2 + width > available) {
+        rows.push([]);
+        rowWidths.push(0);
+        index++;
+      }
+      rowWidths[index] += (rows[index].length ? 2 : 0) + width;
+      rows[index].push(tab);
+    }
+    // Balance the wrap: three tabs on the first row and one on the second
+    // reads as a mistake, so push tabs down while the rows get more even.
+    for (let index = 1; index < rows.length; index++) {
+      while (rows[index - 1].length > 1) {
+        const tab = rows[index - 1][rows[index - 1].length - 1];
+        const width = widths.get(tab);
+        const smaller = rowWidths[index - 1] - width - 2;
+        const larger = rowWidths[index] + width + (rows[index].length ? 2 : 0);
+        if (
+          larger > available ||
+          larger - smaller >= Math.abs(rowWidths[index] - rowWidths[index - 1])
+        ) {
+          break;
+        }
+        rows[index - 1].pop();
+        rowWidths[index - 1] = smaller;
+        rows[index].unshift(tab);
+        rowWidths[index] = larger;
+      }
+    }
+    for (const tabsRow of rows) {
+      const rowBox = new St.BoxLayout({
+        style_class: "codexbar-tab-row",
+        orientation: Clutter.Orientation.HORIZONTAL,
+      });
+      tabsRow.forEach((tab) => rowBox.add_child(tab));
+      this._tabsBox.add_child(rowBox);
+
+      // A name wider than the whole popup cannot be wrapped: shrink that label
+      // so St ends it with an ellipsis instead of cutting it at the menu edge.
+      const tab = tabsRow[0];
+      if (available > 0 && tabsRow.length === 1 && widths.get(tab) > available) {
+        const label = tab.get_child().get_last_child();
+        label.set_width(
+          Math.max(1, available - (widths.get(tab) - labelWidths.get(tab)))
+        );
+      }
+    }
   }
 
   /**
