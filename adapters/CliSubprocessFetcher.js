@@ -19,32 +19,58 @@ export class CliSubprocessFetcher extends UsageFetcher {
     }
 
     /**
+     * Ask `codexbar` for JSON unless the command already says how to format
+     * its output. Commands saved before the JSON format existed don't.
+     * @param {string[]} argv Parsed command line, modified in place.
+     */
+    _ensureJsonFormat(argv) {
+        if (!/^codexbar(\.exe)?$/.test(GLib.path_get_basename(argv[0]))) return;
+        const hasFormat = argv.some((arg) =>
+            arg === "--format" ||
+            arg.startsWith("--format=") ||
+            ["--json", "--json-only", "--json-output"].includes(arg)
+        );
+        if (!hasFormat) argv.push("--format", "json");
+    }
+
+    /**
      * Run the command, parse the output, and resolve window labels.
      */
-    async fetch(providerCommand, cancellable = null) {
+    async fetch(providerCommand, cancellable = null, options = {}) {
         if (!providerCommand) {
-            throw new UsageApiError("No command configured / No hay ningún comando configurado.");
+            throw new UsageApiError("No command configured");
         }
 
-        let executable = "/home/linuxbrew/.linuxbrew/bin/codexbar";
-        const commonPaths = [
-            "/home/linuxbrew/.linuxbrew/bin/codexbar",
-            `${GLib.get_home_dir()}/.local/bin/codexbar`,
-            "/usr/local/bin/codexbar",
-            "/usr/bin/codexbar",
-        ];
+        const [ok, argv] = GLib.shell_parse_argv(providerCommand);
+        if (!ok || !argv || argv.length === 0) {
+            throw new UsageApiError("Invalid command line");
+        }
 
-        for (const path of commonPaths) {
-            if (GLib.file_test(path, GLib.FileTest.EXISTS)) {
-                executable = path;
-                break;
+        // A bare `codexbar` resolves against GNOME Shell's PATH, which is
+        // usually shorter than the one an interactive shell has.
+        if (/^codexbar(\.exe)?$/.test(GLib.path_get_basename(argv[0]))) {
+            const commonPaths = [
+                `/home/linuxbrew/.linuxbrew/bin/${argv[0]}`,
+                `${GLib.get_home_dir()}/.local/bin/${argv[0]}`,
+                `/usr/local/bin/${argv[0]}`,
+                `/usr/bin/${argv[0]}`,
+            ];
+            const resolved = commonPaths.find((path) =>
+                GLib.file_test(path, GLib.FileTest.EXISTS)
+            );
+            if (resolved) {
+                argv[0] = resolved;
+            } else if (!GLib.find_program_in_path(argv[0])) {
+                throw new UsageApiError(
+                    `${argv[0]} was not found. Install the codexbar CLI or set an absolute path in Preferences.`
+                );
             }
         }
 
-        let finalCommand = providerCommand;
-        if (providerCommand.startsWith("codexbar") && !providerCommand.startsWith("/")) {
-            finalCommand = providerCommand.replace("codexbar", executable);
-        }
+        // `codexbar` prints a text table unless asked for JSON, and commands
+        // saved by older versions of the extension omit the flag.
+        this._ensureJsonFormat(argv);
+        const finalCommand = argv.map((arg) => GLib.shell_quote(arg)).join(" ");
 
         // Setup launcher and custom environment (e.g. to propagate correct PATH)
         const env = GLib.get_environ();
@@ -95,12 +121,12 @@ export class CliSubprocessFetcher extends UsageFetcher {
         });
         launcher.set_environ(env);
 
-        const [ok, argv] = GLib.shell_parse_argv(finalCommand);
-        if (!ok || !argv || argv.length === 0) {
-            throw new UsageApiError("Invalid command line configuration / Configuración de línea de comandos no válida.");
+        let proc;
+        try {
+            proc = launcher.spawnv(argv);
+        } catch (e) {
+            throw new UsageApiError(`Could not run ${argv[0]}: ${e.message}`);
         }
-
-        const proc = launcher.spawnv(argv);
 
         const [stdout, stderr] = await new Promise((resolve, reject) => {
             proc.communicate_utf8_async(null, cancellable, (p, res) => {
@@ -123,6 +149,10 @@ export class CliSubprocessFetcher extends UsageFetcher {
         if (trimmedStdout && (trimmedStdout.startsWith("[") || trimmedStdout.startsWith("{"))) {
             try {
                 const parsed = JSON.parse(trimmedStdout);
+                if (options.array) {
+                    // Callers like `codexbar cost` need every entry, not the first.
+                    return { data: parsed, labels: [], command: finalCommand };
+                }
                 const rawData = Array.isArray(parsed) ? parsed[0] : parsed;
                 let labels = extractWindowLabels(rawData);
                 if (labels.length === 0) {
@@ -134,14 +164,14 @@ export class CliSubprocessFetcher extends UsageFetcher {
                     command: finalCommand
                 };
             } catch (e) {
-                throw new UsageApiError(`JSON Error / Error JSON: ${e.message}`);
+                throw new UsageApiError(`Invalid JSON from codexbar: ${e.message}`);
             }
         } else if (trimmedStderr) {
-            throw new UsageApiError(`CLI Error / Error de CLI: ${trimmedStderr.split("\n")[0]}`);
+            throw new UsageApiError(`codexbar failed: ${trimmedStderr.split("\n")[0]}`);
         } else if (trimmedStdout) {
-            throw new UsageApiError("Output is not valid JSON / La salida no es un JSON válido");
+            throw new UsageApiError("codexbar returned text instead of JSON");
         } else {
-            throw new UsageApiError("No output from command / Sin respuesta del comando");
+            throw new UsageApiError("codexbar returned no output");
         }
     }
 
