@@ -148,11 +148,19 @@ export default class CodexBarExtension extends Extension {
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
     // The meter is drawn in the panel's foreground colour, so it has to follow
-    // live theme switches (dark/light/high contrast), not just load time.
+    // live theme switches (dark/light/high contrast), not just load time. A
+    // theme reload changes the context, while a re-tinted panel (transparent
+    // top bar, maximized window) only swaps style classes; that shows up as
+    // style-changed on the indicator itself.
     this._applyMeterColors();
     this._themeContext = St.ThemeContext.get_for_stage(global.stage);
     this._themeContext.connectObject(
       "changed",
+      () => this._applyMeterColors(),
+      this
+    );
+    this._indicator.connectObject(
+      "style-changed",
       () => this._applyMeterColors(),
       this
     );
