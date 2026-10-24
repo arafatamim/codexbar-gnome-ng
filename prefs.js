@@ -15,7 +15,9 @@ import {
   buildCliCommand,
   CLI_SOURCES,
   DIRECT_API,
+  isCustomId,
   parseGeneratedCommand,
+  parseIdList,
 } from "./providerSources.js";
 
 const CONTACT_EMAIL = "hi@inled.es";
@@ -480,6 +482,22 @@ const CodexBarPrefsPage = GObject.registerClass(
       }
       activeProviders = adopted;
 
+      // A provider turned off here must stay off: otherwise the next launch
+      // imports it again from codexbar's config.
+      const setIgnored = (id, ignored) => {
+        if (!id || isCustomId(id)) return;
+
+        const ids = new Set(
+          parseIdList(this._settings.get_string("ignored-providers"))
+        );
+        if (ignored) ids.add(id);
+        else ids.delete(id);
+        this._settings.set_string(
+          "ignored-providers",
+          JSON.stringify([...ids])
+        );
+      };
+
       const saveProviders = async () => {
         const newProviders = [];
         for (const row of this._providerRows) {
@@ -567,6 +585,7 @@ const CodexBarPrefsPage = GObject.registerClass(
             enabledSwitch.active ? _("Enabled") : _("Disabled")
           );
           row.expanded = enabledSwitch.active;
+          setIgnored(row._id, !enabledSwitch.active);
           saveProviders();
         });
         row.add_suffix(enabledSwitch);

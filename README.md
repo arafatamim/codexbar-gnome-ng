@@ -64,6 +64,12 @@ to pick up code changes.
 
 Settings live behind the gear icon in the popup, or in your extension manager.
 
+### Providers
+
+Providers already enabled in codexbar's own config are imported on start, so
+there is nothing to add or enable again here. Turning a provider off in
+Preferences records it and keeps it off.
+
 ### Provider commands
 
 Each provider runs a command that prints JSON, for example:
@@ -121,6 +127,8 @@ tr '\0' '\n' < /proc/$(pgrep -x gnome-shell)/environ | grep OPENROUTER_API_KEY
   plain sentences.
 - **Times that match your desktop.** Your clock format, relative "updated",
   compact durations, whole percentages.
+- **Your codexbar setup, already here.** Providers enabled in codexbar's config
+  show up on start; turning one off in Preferences keeps it off.
 - **Less friction.** Install hints and a confirm-before-remove in preferences,
   plus a fixed cookie-based API path.
 

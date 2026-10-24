@@ -14,6 +14,10 @@
       <default>'[]'</default>
       <summary>JSON string of configured AI providers</summary>
     </key>
+    <key name="ignored-providers" type="s">
+      <default>'[]'</default>
+      <summary>Provider ids turned off in Preferences, excluded from the codexbar config import</summary>
+    </key>
     <key name="display-mode" enum="org.gnome.shell.extensions.codexbar.DisplayMode">
       <default>'remaining'</default>
       <summary>Whether to show used or remaining quota</summary>

@@ -20,6 +20,10 @@ import {
 import { loadToken, nullTokenSchema } from "./secret.js";
 import { LogoCache } from "./logos.js";
 import {
+  mergeCodexbarProviders,
+  parseIdList,
+} from "./providerSources.js";
+import {
   applyLanguage,
   currentLanguage,
   formatPanelText,
@@ -190,6 +194,10 @@ export default class CodexBarExtension extends Extension {
       this
     );
     this._onSettingsChanged();
+
+    // codexbar already stores which providers are on; adopt them instead of
+    // making the user add and enable every one again in Preferences.
+    this._syncProvidersFromCodexbar();
 
     // Keep the panel's reset countdown ticking between refreshes.
     this._panelTickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
@@ -461,6 +469,39 @@ export default class CodexBarExtension extends Extension {
     this._updateUI();
     this._refreshData();
     this._setupTimeout();
+  }
+
+  /**
+   * Adopt providers enabled in codexbar's own config that are missing from the
+   * settings list. Imports are persisted, so later launches only pick up
+   * providers newly enabled in codexbar.
+   */
+  async _syncProvidersFromCodexbar() {
+    try {
+      const entries = await this._apiClient.fetchConfiguredProviders(
+        this._cancellable,
+        this._providers[0]?.command
+      );
+      const ignored = parseIdList(
+        this._settings.get_string("ignored-providers")
+      );
+      const added = mergeCodexbarProviders(this._providers, entries, ignored);
+      if (added.length === 0) return;
+
+      this._settings.set_string(
+        "providers",
+        JSON.stringify([...this._providers, ...added])
+      );
+      logDev(
+        `Imported providers from codexbar: ${added
+          .map((provider) => provider.id)
+          .join(", ")}`
+      );
+    } catch (e) {
+      // Older CLIs have no `config` command and a fresh install may have no
+      // config at all; neither is an error worth surfacing.
+      logDev(`codexbar config unavailable: ${e.message}`);
+    }
   }
 
   /**

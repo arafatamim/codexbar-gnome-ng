@@ -22,7 +22,9 @@ import {
 import {
   adoptCustomProviders,
   buildCliCommand,
+  mergeCodexbarProviders,
   parseGeneratedCommand,
+  parseIdList,
 } from "./providerSources.js";
 import { matchAgent } from "./logoMatch.js";
 
@@ -795,6 +797,45 @@ if (adoptCustomProviders(null, KNOWN_PROVIDERS).length !== 0) {
   throw new Error("Expected adoptCustomProviders(null) to return an empty list");
 }
 console.log("✓ adoptCustomProviders defends against a malformed provider list");
+
+// Providers enabled in codexbar's config fill in whatever the extension is
+// missing, using the CLI's own auto source; disabled ones stay out.
+const configuredProviders = [
+  { provider: "claude", displayName: "Claude", enabled: true },
+  { provider: "opencodego", displayName: "OpenCode Go", enabled: true },
+  { provider: "gemini", displayName: "Gemini", enabled: false },
+];
+const importedProviders = mergeCodexbarProviders(
+  [{ id: "codex", name: "Codex", command: "", useApi: true }],
+  configuredProviders,
+  [],
+);
+if (
+  importedProviders.length !== 2 ||
+  importedProviders[0].id !== "claude" ||
+  importedProviders[0].command !== buildCliCommand("claude", "auto") ||
+  importedProviders[1].name !== "OpenCode Go"
+) {
+  throw new Error("Expected enabled codexbar providers to be imported with their display name");
+}
+if (
+  mergeCodexbarProviders([{ id: "claude" }], configuredProviders, []).length !== 1 ||
+  mergeCodexbarProviders(
+    [],
+    configuredProviders,
+    ["claude", "opencodego"],
+  ).length !== 0
+) {
+  throw new Error("Expected configured and ignored ids to be skipped");
+}
+if (
+  mergeCodexbarProviders(null, null, null).length !== 0 ||
+  parseIdList('["claude", 3]').join() !== "claude" ||
+  parseIdList("not json").length !== 0
+) {
+  throw new Error("Expected malformed provider inputs to yield nothing");
+}
+console.log("✓ codexbar's enabled providers are imported once, minus the ones turned off here");
 
 // Ollama Cloud monthly credit-pool parser test (transparent per-token pricing)
 const ollamaCreditHtml = `

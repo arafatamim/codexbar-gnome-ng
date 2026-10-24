@@ -338,6 +338,26 @@ export class UsageApiClient {
     }
 
     /**
+     * Provider enablement from codexbar's own config, so the extension can
+     * adopt providers the user already turned on there. Optional: older CLIs
+     * have no `config` command, so failures go to the caller.
+     * @param {Gio.Cancellable|null} cancellable
+     * @param {string} providerCommand A configured provider command, so the
+     *   same binary is used instead of whatever `codexbar` the shell's PATH
+     *   happens to contain.
+     * @returns {Promise<Array<object>>} [{provider, displayName, enabled}]
+     */
+    async fetchConfiguredProviders(cancellable = null, providerCommand = '') {
+        const binary = this._codexbarBinary(providerCommand);
+        const result = await this._cliFetcher.fetch(
+            `${binary} config providers --format json`,
+            cancellable,
+            { array: true },
+        );
+        return Array.isArray(result.data) ? result.data : [result.data];
+    }
+
+    /**
      * Local cost and token totals from `codexbar cost`, per provider, for
      * today and for the rolling 30-day window. Optional: older CLIs have no
      * `cost` command, so failures are reported to the caller.
@@ -348,7 +368,7 @@ export class UsageApiClient {
      * @returns {Promise<Map<string, object>>} provider id -> totals
      */
     async fetchCostSummary(cancellable = null, providerCommand = '') {
-        const binary = this._costBinary(providerCommand);
+        const binary = this._codexbarBinary(providerCommand);
         const run = async (days) => {
             const command = days
                 ? `${binary} cost --format json --days ${days}`
@@ -384,13 +404,13 @@ export class UsageApiClient {
     }
 
     /**
-     * Pick the codexbar binary for `cost`: the provider's configured command
-     * when it names codexbar (quoted with shell_quote so paths survive parsing),
-     * otherwise a bare name for the fetcher to resolve.
+     * Pick the codexbar binary for `config`/`cost`: the provider's configured
+     * command when it names codexbar (quoted with shell_quote so paths survive
+     * parsing), otherwise a bare name for the fetcher to resolve.
      * @param {string} providerCommand
      * @returns {string}
      */
-    _costBinary(providerCommand) {
+    _codexbarBinary(providerCommand) {
         const [ok, argv] = providerCommand
             ? GLib.shell_parse_argv(providerCommand)
             : [false, null];

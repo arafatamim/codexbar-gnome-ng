@@ -91,3 +91,59 @@ export function adoptCustomProviders(providers, predefined) {
     };
   });
 }
+
+/**
+ * Providers enabled in codexbar's own config that this extension does not know
+ * about yet.
+ *
+ * `entries` is the CLI's `config providers` payload (`provider`, `displayName`,
+ * `enabled`). Imported rows use the CLI source `auto`, so codexbar's own
+ * per-provider source resolution still applies. Ids the user turned off in
+ * Preferences are skipped instead of coming back at login.
+ *
+ * @param {Array<object>} providers Saved provider list.
+ * @param {Array<object>} entries codexbar config providers.
+ * @param {string[]} ignoredIds
+ * @returns {Array<object>} Entries to append; input is not mutated.
+ */
+export function mergeCodexbarProviders(providers, entries, ignoredIds = []) {
+  const known = new Set(
+    (Array.isArray(providers) ? providers : [])
+      .map((provider) => provider?.id)
+      .filter(Boolean),
+  );
+  const ignored = new Set(Array.isArray(ignoredIds) ? ignoredIds : []);
+  const added = [];
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const id = entry?.provider || entry?.id;
+    if (!id || entry.enabled === false) continue;
+    if (known.has(id) || ignored.has(id)) continue;
+
+    known.add(id);
+    added.push({
+      id,
+      name: entry.displayName || entry.name || id,
+      command: buildCliCommand(id, "auto"),
+      useApi: false,
+    });
+  }
+
+  return added;
+}
+
+/**
+ * Read a settings string holding a JSON array of provider ids.
+ * @param {string} json
+ * @returns {string[]}
+ */
+export function parseIdList(json) {
+  try {
+    const parsed = JSON.parse(json || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((id) => typeof id === "string")
+      : [];
+  } catch (e) {
+    return [];
+  }
+}
