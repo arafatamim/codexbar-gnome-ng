@@ -81,6 +81,7 @@ You can download it from the official GNOME store. It takes longer to be updated
 3. - On Wayland:
       - Log out and log in
       - **For fast development and iteration**: Run `dbus-run-session gnome-shell --wayland --devkit`. You need to have installed Mutter Devkit
+      - Changes to `extension.js` are only picked up by a new shell process. Restart the devkit shell to reload; `gnome-extensions disable` + `enable` re-runs the already imported (cached) code.
    - On X11: `Alt+F2` and type `r` and press enter.
 
 ### From Pulsar Store  
@@ -134,6 +135,12 @@ Without it, `codexbar --provider openrouter --source api` still returns valid JS
 You can choose how metrics are displayed:
 - **Remaining**: Shows the percentage of quota left (default).
 - **Used**: Shows the percentage of quota consumed.
+
+The panel item is a two-bar meter for the active provider, like the macOS app: the
+top bar is the session window and the bottom bar is the weekly window. The bars
+fill with remaining or used quota, following the display mode, and are drawn in
+the panel's own text colour, so they stay monochrome (white on dark, black on
+light).
 
 
 

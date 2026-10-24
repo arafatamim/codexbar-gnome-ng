@@ -29,7 +29,7 @@
     </key>
     <key name="show-logos" type="b">
       <default>true</default>
-      <summary>Whether to show provider logos in the tabs</summary>
+      <summary>Whether to show provider logos in the top bar</summary>
     </key>
     <key name="show-pacing-info" type="b">
       <default>true</default>
