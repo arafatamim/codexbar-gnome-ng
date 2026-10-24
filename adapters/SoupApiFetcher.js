@@ -1,8 +1,15 @@
 
+import Gio from 'gi://Gio';
 import Soup from 'gi://Soup';
 import GLib from 'gi://GLib';
 import { UsageFetcher } from '../core/ports/UsageFetcher.js';
 import { UsageApiError } from '../usageApi.js';
+
+Gio._promisify(
+    Soup.Session.prototype,
+    'send_and_read_async',
+    'send_and_read_finish'
+);
 
 /**
  * ADAPTER (Hexagonal Architecture)
