@@ -16,11 +16,11 @@
 }
 
 .codexbar-panel-meter-session {
- -barlevel-height: 7px;
+ -barlevel-height: 6px;
 }
 
 .codexbar-panel-meter-weekly {
- -barlevel-height: 5px;
+ -barlevel-height: 4px;
 }
 
 /* Provider tabs, as a HIG segmented control */

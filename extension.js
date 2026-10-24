@@ -246,13 +246,13 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * One bar of the panel meter: a 20px-wide level bar filled to a window
+   * One bar of the panel meter: a 22px-wide level bar filled to a window
    * percentage.
    * @param {string} styleClass
    * @returns {BarLevel}
    */
   _meterBar(styleClass) {
-    const bar = new BarLevel({ width: 20 });
+    const bar = new BarLevel({ width: 22 });
     bar.add_style_class_name(styleClass);
     bar.maximum_value = 100;
     bar.overdrive_start = 100;
