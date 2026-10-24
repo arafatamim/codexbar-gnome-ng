@@ -1,164 +1,136 @@
-# CodexBar for GNOME  
+# CodexBar-NG for GNOME
 
-> FEATURED on Codexbar Official repo!
+Show AI provider usage in the GNOME panel. Reads quota windows from the
+[codexbar](https://github.com/steipete/codexbar) CLI and renders the active
+provider's session and weekly limits, reset times, pacing and local cost.
 
-The best GNOME Shell extension to use Codexbar. The most used Codexbar port for GNOME. Feel free to contribute and join our community (links below)
+Fork of [InledGroup/codexbar-gnome](https://github.com/InledGroup/codexbar-gnome).
 
-![CodexBar Panel](<demo.gif>)    
-(TO DO: Update this image)
+![CodexBar popup](<screenshot.png>)
 
 ## Features
 
-- Shows remaining usage/spent + economic expense/remaining
-- Supports a large number of providers + you can add yours
-- Refreshes according to the interval you configure
-- Supports different information extraction methods depending on provider
-- You can show the individual usage of each one in the top bar / show the general summary
-- Indicates what time the usage will restart
-- Calculate if it will be enough for your day of use
-- It is translated and you can translate it to your language
-- **And much more**
-
----
-## Discover my main project [Pulsar OS](https://os.inled.es), which I am dedicating more time to and has a great friendly community for beginners and professionals! It's already on Distrowatch!
----
-## Join the Community
-
-We are a Linux community where everyone is welcome, from beginners to professionals, without ideology or elitism. Join us!
-
-- **Discord**: [Join us on Discord!](https://link.inled.es/discord)
-- **Telegram**: [Join us on Telegram!](https://link.inled.es/telegram)
-- **Matrix**: [Join the Matrix server](https://matrix.inled.es)
-- **YouTube**: [Inled Group YouTube Channel](https://www.youtube.com/@inledgroup)
-- **X (Twitter)**: [@inledgroup on X](https://x.com/inledgroup)
-
-
-## Updates  
-- Added translations
-- Merged a lot of really good pr's!
+- Per-provider quota windows with reset countdown and pace (reserve/deficit)
+- Two-bar panel meter (session, weekly), or text segments for providers shown
+  in the panel
+- Provider tabs, account details, and cost totals for today and the last 30 days
+- Provider logos from the ACP registry, cached locally
+- Custom providers: anything that prints codexbar JSON works
+- English, Spanish and Brazilian Portuguese; times follow the desktop clock
+  format
 
 ## Requirements
 
-The extension requires the CodexBar CLI tool installed on your system.
-
-### Install CodexBar CLI
-
-It is recommended to install the CLI via Homebrew, which is the official way:
+CodexBar CLI:
 
 ```bash
 brew install steipete/tap/codexbar
 ```
-Homebrew exists for Linux (and is a good package manager). For those who don't know, it can be installed with
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
 
-### Install Cookie Importer (only for Codex users)
-It is now distributed separately from the extension and no longer requires PyPI. Download it directly from the repo into `~/.local/bin` (the extension looks there by default):
+Cookie importer, only for Codex:
+
 ```bash
 mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-cookie-importer -o ~/.local/bin/codexbar-cookie-importer && chmod +x ~/.local/bin/codexbar-cookie-importer
 ```
-It is a dependency-free bash script (uses `secret-tool`, `openssl`, `sqlite3`).
 
-### Install helper to Trust the Certificate of the Antigravity Language Server (only for Antigravity users)
-This minimal script is invoked by the extension when you click on the trust antigravity cert button and what it does is save the certificate in the system trust store, elevating privileges.   
-Since it elevates privileges, it would be unreasonable to integrate the elevation logic into the extension (as JustPerfection told me) so it is served as a standalone script that the user must decide to install, thus complying with GJS guidelines. It is now a dependency-free bash script (no PyPI):
+Antigravity certificate helper, only for Antigravity. It elevates privileges to
+install the language server certificate, which is why it stays a separate
+script:
 
 ```bash
 mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-ssl-helper -o ~/.local/bin/codexbar-ssl-helper && chmod +x ~/.local/bin/codexbar-ssl-helper && codexbar-ssl-helper
 ```
 
+## Install
 
-## Installation
+```bash
+git clone https://github.com/arafatamim/codexbar-gnome-ng
+cd codexbar-gnome-ng
+./install.sh
+```
 
-### From EGO
-You can download it from the official GNOME store. It takes longer to be updated.
-[https://extensions.gnome.org/extension/9841/codexbar/](https://extensions.gnome.org/extension/9841/codexbar/)
+Then reload the shell:
 
-### From Github  
-1. Clone or fork the repo
-2. Run the `./install` script
-3. - On Wayland:
-      - Log out and log in
-      - **For fast development and iteration**: Run `dbus-run-session gnome-shell --wayland --devkit`. You need to have installed Mutter Devkit
-      - Changes to `extension.js` are only picked up by a new shell process. Restart the devkit shell to reload; `gnome-extensions disable` + `enable` re-runs the already imported (cached) code.
-   - On X11: `Alt+F2` and type `r` and press enter.
+- Wayland: log out and back in, or run
+  `dbus-run-session gnome-shell --wayland --devkit` (requires Mutter Devkit)
+  for a nested, restartable session.
+- X11: `Alt+F2`, type `r`, press Enter.
 
-### From Pulsar Store  
-[Coming soon](https://store-os.inled.es)
+`extension.js` is imported once per shell process: disabling and enabling the
+extension re-runs the cached module, so restart the shell (or devkit session)
+to pick up code changes.
 
 ## Configuration
 
-Access the settings through the gear icon in the extension menu or using your extension manager client.
+Settings live behind the gear icon in the popup, or in your extension manager.
 
-### Provider Commands
+### Provider commands
 
-Each provider must be configured with a command that returns JSON output.
+Each provider runs a command that prints JSON, for example:
 
-Example for Gemini:
 ```bash
 codexbar --provider gemini --source api --format json
 ```
 
-The extension will automatically attempt to locate the `codexbar` binary in common locations such as `/home/linuxbrew/.linuxbrew/bin/` if an absolute path is not provided. 
+A bare `codexbar` is resolved from common install paths (Homebrew, `~/.local/bin`,
+`/usr/local/bin`, `/usr/bin`) because the shell's `PATH` is shorter than a
+terminal's.
 
-Certain vendors have specific fields in Codexbar CLI, whose interpretation may not have been implemented so this is a great opportunity for you to implement support (if you want) and do a PR.
+### API keys
 
-### API Keys (e.g. OpenRouter)
-
-Some providers (OpenRouter with `--source api`) authenticate the CodexBar CLI via an environment variable, e.g. `OPENROUTER_API_KEY`, instead of a token cached on disk. Setting that variable in `~/.zshrc`, `~/.bashrc`, or similar is **not enough**: GNOME Shell is started by your login/display manager, not by an interactive shell, so it never sources your shell's dotfiles, and any command the extension runs (as a child process of GNOME Shell) inherits GNOME Shell's environment, not your terminal's.
-
-To make the variable visible to the extension, add it to your systemd user environment instead:
+Providers authenticated by environment variable (for example OpenRouter with
+`--source api` and `OPENROUTER_API_KEY`) need the variable in GNOME Shell's
+environment, not your shell's dotfiles:
 
 ```bash
 mkdir -p ~/.config/environment.d
 echo 'OPENROUTER_API_KEY=sk-or-v1-...' > ~/.config/environment.d/codexbar.conf
 chmod 600 ~/.config/environment.d/codexbar.conf
-```
-
-Then log out and log back in. `environment.d` files are only read once, when your `systemd --user` manager starts — if it's still running from before you added the file (e.g. lingering is enabled: `loginctl show-user $USER | grep Linger`), a normal logout/login won't pick it up. In that case, apply it to the running instance once, then log out/in as usual:
-
-```bash
 systemctl --user import-environment OPENROUTER_API_KEY
 ```
 
-You can confirm GNOME Shell actually has the variable with:
+Log out and back in for `environment.d` to be read. Verify with:
 
 ```bash
 tr '\0' '\n' < /proc/$(pgrep -x gnome-shell)/environ | grep OPENROUTER_API_KEY
 ```
 
-Without it, `codexbar --provider openrouter --source api` still returns valid JSON, but with a top-level `error` field and no `usage.details` — so the OpenRouter tab shows only a bare, empty tier instead of the Credits / API key / Spend history breakdown.
+### Display
 
-### Display Mode
+- **Remaining** (default) or **Used**: whether bars and numbers count quota left
+  or consumed.
+- The panel meter shows the session window on top and the weekly window below,
+  drawn in the panel's own text colour, so it stays monochrome and follows the
+  panel's dynamic tint.
+- Logos come from the [ACP agent registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
+  matched against the provider id or name, and cached under
+  `~/.cache/codexbar/logos` for a month. DeepSeek, OpenRouter, Perplexity and
+  Ollama are not listed there and use the bundled icons.
 
-You can choose how metrics are displayed:
-- **Remaining**: Shows the percentage of quota left (default).
-- **Used**: Shows the percentage of quota consumed.
+## Differences from upstream
 
-The panel item is a two-bar meter for the active provider, like the macOS app: the
-top bar is the session window and the bottom bar is the weekly window. The bars
-fill with remaining or used quota, following the display mode, and are drawn in
-the panel's own text colour, so they stay monochrome (white on dark, black on
-light).
+- **Bars that fit the panel.** Session and weekly quotas at a glance — no
+  battery, no averaged percentage — and the fill follows light, dark and tinted
+  panels.
+- **A popup you can read.** One percentage per window, a warning icon only when
+  a limit gets close, and local spend for today and the last 30 days.
+- **Logos, handled for you.** Provider icons come from the ACP registry and are
+  cached locally.
+- **Calls that just work.** Commands are parsed and quoted, `codexbar` is found
+  automatically, `--format json` is filled in when missing, and errors read as
+  plain sentences.
+- **Times that match your desktop.** Your clock format, relative "updated",
+  compact durations, whole percentages.
+- **Less friction.** Install hints and a confirm-before-remove in preferences,
+  plus a fixed cookie-based API path.
 
-Provider logos come from the [ACP agent registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
-matched against the provider id or name, so adding a provider does not mean
-shipping another icon. They are cached under `~/.cache/codexbar/logos` and
-revalidated monthly. DeepSeek, OpenRouter, Perplexity and Ollama are not in the
-registry and still use the icons bundled with the extension.
+## Attribution
 
-
+Based on [codexbar-gnome](https://github.com/InledGroup/codexbar-gnome) by Inled
+Group, itself a GNOME port of [CodexBar](https://github.com/steipete/codexbar) by
+[@steipete](https://github.com/steipete).
 
 ## License
 
-This project is licensed under [MIT-INLED](https://license.inled.es). Click on the name to see the license.
-
-> [!WARNING]
-> If you base your code on ours or remix it using AI, you must credit the original repository out of respect for the contributors and the creator.
-
-
-
-> [!NOTE]
-> **ABOUT AI**  
-> AI is used to develop this project and we accept contributions with AI as long as you review what the AI ​​does, have tested it and do not rewrite many lines of code, and the PR and Issues must be written by a human, simply so that you are not talking to an AI that you do not know if it is AI or human. Our community is friendly, without ideology or politics, and you can join us on the channels described above. Being against positioning ourselves ideologically, we are not against AI, so its use is welcome
+[MIT-INLED](https://license.inled.es). If you base your code on this project or
+remix it with AI, credit the original repository.
