@@ -65,6 +65,35 @@ export const tr = (s) => _catalog.get(s) ?? s;
 /** BCP-47 tag for Intl; tied to the chosen language, not the process locale. */
 const uiLocale = () => (_language === "en" ? "en" : _language.replace("_", "-"));
 
+// Times and dates follow the session's regional settings, not the extension's
+// UI language, and the hour cycle follows the desktop's clock-format setting so
+// the popup matches the clock in the top bar.
+let _hour12 = null;
+
+/** @param {boolean|null} hour12 True for 12-hour clock, null to follow locale. */
+export const setHour12 = (hour12) => {
+  _hour12 = typeof hour12 === "boolean" ? hour12 : null;
+};
+
+const withHourCycle = (options) =>
+  _hour12 === null ? options : { ...options, hour12: _hour12 };
+
+/** Time in the session locale, e.g. "18:05" or "6:05 PM". */
+export const formatClockTime = (date, options) =>
+  date.toLocaleTimeString(
+    undefined,
+    withHourCycle(options ?? { hour: "2-digit", minute: "2-digit" }),
+  );
+
+/** Date and time in the session locale, e.g. "Oct 31, 6:35 PM". */
+export const formatClockDateTime = (date, options) =>
+  date.toLocaleString(
+    undefined,
+    withHourCycle(
+      options ?? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" },
+    ),
+  );
+
 // Marks strings for xgettext that only exist at runtime (codexbar-cli output).
 const N_ = (s) => s;
 export const CLI_STRINGS = [
@@ -74,14 +103,42 @@ export const CLI_STRINGS = [
   N_("Monthly"),
 ];
 
-const fill = (template, ...values) => {
+/**
+ * Expand a gettext template: `%s`/`%d` take the next value, `%%` is a
+ * literal percent sign. Exported for callers that build strings from
+ * translated templates (the extension used to call a non-existent
+ * `String.prototype.format`).
+ */
+export const formatText = (template, ...values) => {
   let i = 0;
-  return template.replace(/%[sd]/g, () => String(values[i++]));
+  return String(template).replace(/%%|%[sd]/g, (match) =>
+    match === "%%" ? "%" : String(values[i++]),
+  );
 };
 
-/** 7 -> "7", 6.54 -> "6.5" ("6,5" in es/pt_BR). */
+const fill = formatText;
+
+/** Whole percentage points: usage is never precise enough for decimals. */
 export const formatPercent = (value) =>
-  Number(value || 0).toLocaleString(uiLocale(), { maximumFractionDigits: 1 });
+  Number(value || 0).toLocaleString(uiLocale(), { maximumFractionDigits: 0 });
+
+/**
+ * Relative age for "Updated …" lines: "just now", "5m ago", "3h ago",
+ * "1d 12h ago".
+ * @param {number} seconds
+ * @param {(s: string) => string} tr
+ */
+export const formatRelativeTime = (seconds, tr) => {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) return tr("just now");
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return fill(tr("%dm ago"), minutes);
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return fill(tr("%dh ago"), hours);
+  const days = Math.floor(hours / 24);
+  const rest = hours % 24;
+  return rest ? fill(tr("%dd %dh ago"), days, rest) : fill(tr("%dd ago"), days);
+};
 
 /** Compact duration: "45min", "3h 9min", "5d 1h". */
 export const formatDuration = (seconds) => {
@@ -105,10 +162,10 @@ export const formatReset = (resetAfterSeconds, elapsedSeconds, tr, now = new Dat
   const seconds = (resetAfterSeconds || 0) - (elapsedSeconds || 0);
   if (!(seconds > 0)) return "";
   const resetDate = new Date(now.getTime() + seconds * 1000);
-  const time = resetDate.toLocaleTimeString(uiLocale(), { hour: "2-digit", minute: "2-digit" });
+  const time = formatClockTime(resetDate);
   if (resetDate.toDateString() === now.toDateString())
     return fill(tr("Resets at %s (in %s)"), time, formatDuration(seconds));
-  const day = resetDate.toLocaleDateString(uiLocale(), { day: "2-digit", month: "2-digit" });
+  const day = resetDate.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit" });
   return fill(tr("Resets %s at %s (in %s)"), day, time, formatDuration(seconds));
 };
 
@@ -118,8 +175,11 @@ export const localizeLabel = (label, tr) => {
   const direct = tr(label);
   if (direct !== label) return direct;
   let m;
-  if ((m = /^(\d+)-Hour Window$/i.exec(label))) return fill(tr("%d-Hour Window"), m[1]);
-  if ((m = /^(\d+)-Day Window$/i.exec(label))) return fill(tr("%d-Day Window"), m[1]);
+  // "Window" is dropped from the labels; older payloads still carry it.
+  if ((m = /^(\d+)-Hour(?: Window)?$/i.exec(label))) return fill(tr("%d-Hour"), m[1]);
+  if ((m = /^(\d+)-Day(?: Window)?$/i.exec(label))) return fill(tr("%d-Day"), m[1]);
+  if (/^Usage Window$/i.test(label)) return tr("Usage");
+  if (/^Weekly Window$/i.test(label)) return tr("Weekly");
   // CLI-provided names ("Gemini 5-hour") are only rewritten when the
   // language actually has a translation; English keeps the CLI's wording.
   const translated = (template) => {
