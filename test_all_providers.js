@@ -10,8 +10,11 @@ import {
 import {
   applyLanguage,
   currentLanguage,
+  formatDuration,
   formatPanelText,
   formatPercent,
+  formatRelativeTime,
+  localizeLabel,
   parseMo,
   setCatalog,
   tr,
@@ -321,7 +324,7 @@ if (sameDayWeeklyReset !== `Resets at ${sameDayTime} (in 2h)`) {
     `Same-day weekly reset should omit the date: ${sameDayWeeklyReset}`,
   );
 }
-if (laterWeeklyReset !== `Resets at ${laterDateTime} (in 48h)`) {
+if (laterWeeklyReset !== `Resets at ${laterDateTime} (in 2d)`) {
   throw new Error(
     `Later weekly reset should include the date: ${laterWeeklyReset}`,
   );
@@ -383,8 +386,8 @@ sparkExpectations.forEach(([tier, expected]) => {
   }
 });
 const expectedSparkLabels = [
-  "5-Hour Window",
-  "Weekly Window",
+  "5-Hour",
+  "Weekly",
   "Codex Spark 5-hour",
   "Codex Spark Weekly",
 ];
@@ -450,8 +453,8 @@ directSparkExpectations.forEach(([tier, expected]) => {
   }
 });
 const expectedDirectSparkLabels = [
-  "5-Hour Window",
-  "Weekly Window",
+  "5-Hour",
+  "Weekly",
   "Codex Spark 5-hour",
   "Codex Spark Weekly",
 ];
@@ -959,16 +962,16 @@ setCatalog("es", parsed);
 if (currentLanguage() !== "es") throw new Error("setCatalog should switch language");
 if (tr("Weekly Window") !== "Ventana semanal") throw new Error("tr should translate");
 if (tr("Untranslated") !== "Untranslated") throw new Error("tr should fall back to msgid");
-if (formatPercent(6.5) !== "6,5") {
-  throw new Error(`es locale should format 6,5, got ${formatPercent(6.5)}`);
+if (formatPercent(6.5) !== "7") {
+  throw new Error(`percentages should be whole points, got ${formatPercent(6.5)}`);
 }
 setCatalog("en", parsed);
 if (currentLanguage() !== "en") throw new Error("en should be selected");
 if (tr("Weekly Window") !== "Weekly Window") {
   throw new Error("English must not load a catalog");
 }
-if (formatPercent(6.5) !== "6.5") {
-  throw new Error(`en locale should format 6.5, got ${formatPercent(6.5)}`);
+if (formatPercent(63.4) !== "63") {
+  throw new Error(`percentages should drop decimals, got ${formatPercent(63.4)}`);
 }
 setCatalog("xx", parsed); // unknown -> English fallback
 if (currentLanguage() !== "en") throw new Error("Unknown language should fall back to en");
@@ -983,6 +986,40 @@ applyLanguage("en", () => mo);
 if (tr("Weekly Window") !== "Weekly Window") throw new Error("en must ignore any catalog");
 setCatalog("en", null);
 console.log("✓ Language selection is explicit, with English as the fallback");
+
+// Relative "Updated …" labels, day-scale durations and window label wording.
+const identity = (s) => s;
+const relativeCases = [
+  [20, "just now"],
+  [5 * 60, "5m ago"],
+  [3 * 3600, "3h ago"],
+  [(24 + 12) * 3600, "1d 12h ago"],
+  [3 * 24 * 3600, "3d ago"],
+];
+for (const [seconds, expected] of relativeCases) {
+  const actual = formatRelativeTime(seconds, identity);
+  if (actual !== expected)
+    throw new Error(`formatRelativeTime(${seconds}) = ${actual}, expected ${expected}`);
+}
+if (formatDuration((24 + 12) * 3600) !== "1d 12h") {
+  throw new Error(`formatDuration should use days past 24h, got ${formatDuration((24 + 12) * 3600)}`);
+}
+if (formatDuration(2 * 24 * 3600) !== "2d") {
+  throw new Error(`formatDuration(48h) should be 2d, got ${formatDuration(2 * 24 * 3600)}`);
+}
+const labelCases = [
+  ["5-Hour", "5-Hour"],
+  ["5-Hour Window", "5-Hour"],
+  ["3-Day Window", "3-Day"],
+  ["Weekly Window", "Weekly"],
+  ["Usage Window", "Usage"],
+];
+for (const [input, expected] of labelCases) {
+  const actual = localizeLabel(input, identity);
+  if (actual !== expected)
+    throw new Error(`localizeLabel(${input}) = ${actual}, expected ${expected}`);
+}
+console.log("✓ Relative update labels, day-scale durations and Window-free labels");
 
 // Ollama Cloud current layout (late 2026): "Monthly credits used" + "Refills to … on <date>"
 const refillDate = new Date(Date.now() + 25 * 24 * 3600 * 1000);

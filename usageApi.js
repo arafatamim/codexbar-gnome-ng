@@ -6,6 +6,7 @@ import { SoupApiFetcher } from './adapters/SoupApiFetcher.js';
 import { OllamaSettingsFetcher } from './adapters/OllamaSettingsFetcher.js';
 
 import { CliSubprocessFetcher } from './adapters/CliSubprocessFetcher.js';
+import { formatClockDateTime, formatClockTime, formatDuration } from './localize.js';
 
 const API_BASE_URL = 'https://chatgpt.com';
 const SUMMARY_ENDPOINT = '/backend-api/wham/usage';
@@ -138,22 +139,11 @@ export const formatResetDescription = (seconds, windowSeconds, now = new Date())
         resetDate.getDate() === now.getDate();
     const showDate = windowSeconds >= 7 * 24 * 3600 && !isSameDay;
     const resetStr = showDate
-        ? resetDate.toLocaleString([], {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        })
-        : resetDate.toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        ? formatClockDateTime(resetDate)
+        : formatClockTime(resetDate);
 
-    if (seconds < 3600) {
-        return `Resets at ${resetStr} (in ${Math.round(seconds / 60)}m)`;
-    }
-    const hours = Math.round(seconds / 3600);
-    return `Resets at ${resetStr} (in ${hours}h)`;
+    // Same compact form as the rest of the UI: "45min", "3h", "1d 12h".
+    return `Resets at ${resetStr} (in ${formatDuration(seconds)})`;
 };
 
 /**
@@ -348,6 +338,70 @@ export class UsageApiClient {
     }
 
     /**
+     * Local cost and token totals from `codexbar cost`, per provider, for
+     * today and for the rolling 30-day window. Optional: older CLIs have no
+     * `cost` command, so failures are reported to the caller.
+     * @param {Gio.Cancellable|null} cancellable
+     * @param {string} providerCommand A configured provider command, so `cost`
+     *   runs the same binary (e.g. a Homebrew path) instead of whatever
+     *   `codexbar` the shell's PATH happens to contain.
+     * @returns {Promise<Map<string, object>>} provider id -> totals
+     */
+    async fetchCostSummary(cancellable = null, providerCommand = '') {
+        const binary = this._costBinary(providerCommand);
+        const run = async (days) => {
+            const command = days
+                ? `${binary} cost --format json --days ${days}`
+                : `${binary} cost --format json`;
+            const result = await this._cliFetcher.fetch(command, cancellable, {
+                array: true,
+            });
+            return Array.isArray(result.data) ? result.data : [result.data];
+        };
+
+        // `codexbar cost` reuses last30Days* for whichever window --days asks
+        // for, so each call is read with the same accessor.
+        const read = (entry) => ({
+            cost: Number(entry.last30DaysCostUSD ?? 0),
+            tokens: Number(entry.last30DaysTokens ?? 0),
+            currency: entry.currencyCode || 'USD',
+            estimated: entry.provenance === 'listPriceEstimate',
+        });
+
+        const [today, last30Days] = await Promise.all([run(1), run(null)]);
+        const summary = new Map();
+        for (const entry of today) {
+            if (!entry?.provider) continue;
+            summary.set(entry.provider, { today: read(entry) });
+        }
+        for (const entry of last30Days) {
+            if (!entry?.provider) continue;
+            summary.set(entry.provider, {
+                ...(summary.get(entry.provider) || {}),
+                last30Days: read(entry),
+            });
+        }
+        return summary;
+    }
+
+    /**
+     * Pick the codexbar binary for `cost`: the provider's configured command
+     * when it names codexbar (quoted with shell_quote so paths survive parsing),
+     * otherwise a bare name for the fetcher to resolve.
+     * @param {string} providerCommand
+     * @returns {string}
+     */
+    _costBinary(providerCommand) {
+        const [ok, argv] = providerCommand
+            ? GLib.shell_parse_argv(providerCommand)
+            : [false, null];
+        const bin = ok && argv?.length ? argv[0] : '';
+        if (bin && /^codexbar(\.exe)?$/.test(GLib.path_get_basename(bin)))
+            return GLib.shell_quote(bin);
+        return 'codexbar';
+    }
+
+    /**
      * Abort any pending requests and clean up session.
      */
     destroy() {
@@ -422,7 +476,7 @@ export class UsageApiClient {
                 if (idx < 4) {
                     const tierName = tierKeys[idx];
                     mappedTiers[tierName] = mapSingle(item.window);
-                    labels.push(item.title || "Usage Window");
+                    labels.push(item.title || "Usage");
                 }
             });
 
@@ -450,13 +504,13 @@ export class UsageApiClient {
         ) {
             const labelForWindow = (win, key) => {
                 if (key && payload?.rateWindowLabels?.[key]) return payload.rateWindowLabels[key];
-                if (!win || !win.windowSeconds) return win?.resetDescription ? 'Balance' : 'Usage Window';
+                if (!win || !win.windowSeconds) return win?.resetDescription ? 'Balance' : 'Usage';
                 const hours = Math.round(win.windowSeconds / 3600);
                 if (hours >= 24) {
                     const days = Math.round(hours / 24);
-                    return days === 7 ? 'Weekly Window' : `${days}-Day Window`;
+                    return days === 7 ? 'Weekly' : `${days}-Day`;
                 }
-                return `${hours}-Hour Window`;
+                return `${hours}-Hour`;
             };
 
             const queue = [];
@@ -496,8 +550,8 @@ export class UsageApiClient {
 
                         const windowLabel = labelForWindow(win);
                         let suffix = windowLabel;
-                        if (windowLabel === 'Weekly Window') suffix = 'Weekly';
-                        else suffix = windowLabel.replace('Hour Window', 'hour');
+                        if (windowLabel === 'Weekly') suffix = 'Weekly';
+                        else suffix = windowLabel.replace('Hour', 'hour');
                         queue.push({
                             win,
                             label: displayName ? `${displayName} ${suffix}` : windowLabel,
