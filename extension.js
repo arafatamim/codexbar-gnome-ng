@@ -725,15 +725,6 @@ export default class CodexBarExtension extends Extension {
       box.add_child(row);
     });
 
-    // Only say the numbers are estimates when the CLI actually priced them
-    // that way; reported costs would make the caption wrong.
-    const estimated = [entry.today, entry.last30Days].some(
-      (totals) => totals?.estimated
-    );
-    if (estimated)
-      box.add_child(
-        captionLabel(_("Estimate from local logs at API list price"))
-      );
     this._addInactiveItem(box);
   }
 

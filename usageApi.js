@@ -365,7 +365,6 @@ export class UsageApiClient {
             cost: Number(entry.last30DaysCostUSD ?? 0),
             tokens: Number(entry.last30DaysTokens ?? 0),
             currency: entry.currencyCode || 'USD',
-            estimated: entry.provenance === 'listPriceEstimate',
         });
 
         const [today, last30Days] = await Promise.all([run(1), run(null)]);
