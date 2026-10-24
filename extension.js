@@ -1,14 +1,16 @@
-
-// Main extension skeleton: panel indicator, popup menu and refresh loop.
+// Panel indicator, popup menu and refresh loop for CodexBar.
 
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import St from "gi://St";
 import Clutter from "gi://Clutter";
+import Atk from "gi://Atk";
 import Pango from "gi://Pango";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
+import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
+import { BarLevel } from "resource:///org/gnome/shell/ui/barLevel.js";
 import {
   calculateUsagePace,
   deriveCreditsPercent,
@@ -20,11 +22,14 @@ import {
   applyLanguage,
   currentLanguage,
   formatPanelText,
+  formatRelativeTime,
   formatPercent,
   formatReset,
+  formatText,
   localizeDetail,
   localizeLabel,
   setCatalog,
+  setHour12,
   tr as _,
 } from "./localize.js";
 
@@ -38,19 +43,63 @@ function logDev(msg) {
 // opacity. St has no CSS `opacity`, and the shell dims text with per-theme
 // `rgba()` foregrounds only because it ships separate light and dark
 // stylesheets — an extension with a single stylesheet cannot.
-const SECONDARY_TEXT_OPACITY = 200;
+const SECONDARY_TEXT_OPACITY = 178;
 
 /**
- * Build a dimmed secondary label.
+ * Money in the session locale, falling back to a plain dollar string when the
+ * currency code isn't supported by Intl.
+ * @param {number} value
+ * @param {string} currency
+ */
+const formatMoney = (value, currency = "USD") => {
+  try {
+    return Number(value).toLocaleString(undefined, {
+      style: "currency",
+      currency,
+    });
+  } catch (e) {
+    return `$${Number(value).toFixed(2)}`;
+  }
+};
+
+/**
+ * Compact token count: 812, 64.2K, 146.4M, 1.2B.
+ * @param {number} value
+ */
+const formatTokens = (value) => {
+  const n = Number(value) || 0;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
+  return String(n);
+};
+
+/**
+ * Build a dimmed caption.
+ * @param {string} text
  * @param {object} params Extra St.Label properties.
  * @returns {St.Label}
  */
-function subtitleLabel(params) {
+function captionLabel(text, params = {}) {
   const label = new St.Label({
-    style_class: "codexbar-usage-subtitle",
+    text,
+    style_class: "codexbar-caption",
     ...params,
   });
   label.opacity = SECONDARY_TEXT_OPACITY;
+  return label;
+}
+
+/**
+ * Build a dimmed caption that wraps instead of overflowing the popup.
+ * @param {string} text
+ * @param {object} params Extra St.Label properties.
+ * @returns {St.Label}
+ */
+function wrappingLabel(text, params = {}) {
+  const label = captionLabel(text, params);
+  label.clutter_text.line_wrap = true;
+  label.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
   return label;
 }
 
@@ -60,106 +109,53 @@ function subtitleLabel(params) {
 export default class CodexBarExtension extends Extension {
   /**
    * Called when the extension is enabled.
-   * Se llama cuando la extensión se activa.
    */
   enable() {
     this._settings = this.getSettings();
     this._apiClient = new UsageApiClient(this.path);
     this._copyTimeouts = [];
 
+    this._providers = [];
+    this._providersData = [];
+    this._costData = new Map();
+    this._activeProviderIndex = 0;
+    this._sessionPercent = null;
+    this._weeklyPercent = null;
+    this._meterColor = null;
+    this._loading = false;
+    this._cancellable = new Gio.Cancellable();
+
     this._applyLanguage();
+
+    // Times follow the desktop's clock format, like the shell's own clock.
+    this._interfaceSettings = new Gio.Settings({
+      schema_id: "org.gnome.desktop.interface",
+    });
+    this._applyClockFormat();
+    this._interfaceSettings.connectObject(
+      "changed::clock-format",
+      () => {
+        this._applyClockFormat();
+        this._updateUI();
+      },
+      this
+    );
+
     this._indicator = new PanelMenu.Button(0.0, _("CodexBar"), false);
-
-    this._iconBox = new St.BoxLayout({
-      style_class: "codexbar-panel-icon-box",
-      orientation: Clutter.Orientation.HORIZONTAL,
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    this._iconFill = new St.Widget({
-      style_class: "codexbar-panel-icon-fill",
-      x_expand: false,
-      y_align: Clutter.ActorAlign.CENTER,
-      width: 0,
-    });
-    this._iconBox.add_child(this._iconFill);
-
-    // Per-provider text ("5h 3% · W 22% in 3h 15m"), shown instead of the
-    // bar when any provider is flagged showInPanel.
-    this._panelTextBox = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-      y_align: Clutter.ActorAlign.CENTER,
-      visible: false,
-    });
-    this._panelBox = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-    });
-    this._panelBox.add_child(this._iconBox);
-    this._panelBox.add_child(this._panelTextBox);
-    // Numeric percentage beside the battery icon; meaning follows display-mode.
-    this._percentLabel = new St.Label({
-      text: "",
-      y_align: Clutter.ActorAlign.CENTER,
-      style_class: "codexbar-panel-percent",
-      visible: false,
-    });
-    this._panelBox.add_child(this._percentLabel);
-    this._indicator.add_child(this._panelBox);
-
-    this._headerBox = new St.BoxLayout({
-      style_class: "codexbar-header",
-      orientation: Clutter.Orientation.HORIZONTAL,
-      x_expand: true,
-    });
-    this._headerTitle = new St.Label({
-      text: _("CodexBar"),
-      y_align: Clutter.ActorAlign.CENTER,
-      x_expand: true,
-    });
-    this._headerBox.add_child(this._headerTitle);
-
-    let refreshBtn = new St.Button({
-      child: new St.Icon({ icon_name: "view-refresh-symbolic", icon_size: 16 }),
-      style_class: "codexbar-header-button",
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    refreshBtn.connect("clicked", () => this._refreshData());
-    this._headerBox.add_child(refreshBtn);
-
-    let settingsBtn = new St.Button({
-      child: new St.Icon({
-        icon_name: "preferences-system-symbolic",
-        icon_size: 16,
-      }),
-      style_class: "codexbar-header-button",
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    settingsBtn.connect("clicked", () => {
-      this.openPreferences();
-      this._indicator.menu.close();
-    });
-    this._headerBox.add_child(settingsBtn);
-
-    this._indicator.menu.box.add_child(this._headerBox);
-    this._indicator.menu.box.add_style_class_name("codexbar-popup");
-
-    this._tabsContainer = new St.BoxLayout({
-      style_class: "codexbar-tabs-container",
-      orientation: Clutter.Orientation.HORIZONTAL,
-    });
-    this._indicator.menu.box.add_child(this._tabsContainer);
-
-    this._contentBox = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      style_class: "codexbar-usage-section",
-    });
-    this._indicator.menu.box.add_child(this._contentBox);
+    this._buildPanel();
+    this._buildMenu();
 
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-    this._activeProviderIndex = 0;
-    this._providersData = [];
-    this._loading = false;
-    this._cancellable = new Gio.Cancellable();
+    // The meter is drawn in the panel's foreground colour, so it has to follow
+    // live theme switches (dark/light/high contrast), not just load time.
+    this._applyMeterColors();
+    this._themeContext = St.ThemeContext.get_for_stage(global.stage);
+    this._themeContext.connectObject(
+      "changed",
+      () => this._applyMeterColors(),
+      this
+    );
 
     this._settings.connectObject(
       "changed::providers", () => this._onSettingsChanged(),
@@ -184,11 +180,23 @@ export default class CodexBarExtension extends Extension {
     // Keep the panel's reset countdown ticking between refreshes.
     this._panelTickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
       this._updatePanel();
+      this._updateHeader(); // keep "Updated 5m ago" from going stale
       return GLib.SOURCE_CONTINUE;
     });
   }
 
-  // Load the catalog for the `language` setting; English is the fallback.
+  /**
+   * Mirror the desktop's 12/24-hour clock setting for displayed times.
+   */
+  _applyClockFormat() {
+    if (!this._interfaceSettings) return;
+    const format = this._interfaceSettings.get_string("clock-format");
+    setHour12(format === "12h" ? true : format === "24h" ? false : null);
+  }
+
+  /**
+   * Load the catalog for the `language` setting; English is the fallback.
+   */
   _applyLanguage() {
     const domain = this.metadata["gettext-domain"] ?? this.uuid;
     applyLanguage(this._settings.get_string("language"), (lang) => {
@@ -203,8 +211,152 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
+   * Build the panel actor: the session/weekly meter or the per-provider text
+   * segments configured to appear in the panel.
+   */
+  _buildPanel() {
+    // Two bars like the macOS app, drawn in the panel's foreground colour. A
+    // stock battery read as hardware and a full battery meant healthy, so a
+    // nearly spent quota looked fine.
+    this._sessionBar = this._meterBar("codexbar-panel-meter-session");
+    this._weeklyBar = this._meterBar("codexbar-panel-meter-weekly");
+    this._meter = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      y_align: Clutter.ActorAlign.CENTER,
+      style_class: "codexbar-panel-meter",
+    });
+    this._meter.add_child(this._sessionBar);
+    this._meter.add_child(this._weeklyBar);
+
+    // Per-provider text ("5h 3% · W 22% in 3h 15m"), shown instead of the
+    // meter when any provider is flagged showInPanel.
+    this._panelTextBox = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      y_align: Clutter.ActorAlign.CENTER,
+      visible: false,
+    });
+
+    this._panelBox = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this._panelBox.add_child(this._meter);
+    this._panelBox.add_child(this._panelTextBox);
+    this._indicator.add_child(this._panelBox);
+  }
+
+  /**
+   * One bar of the panel meter: a 20px-wide level bar filled to a window
+   * percentage.
+   * @param {string} styleClass
+   * @returns {BarLevel}
+   */
+  _meterBar(styleClass) {
+    const bar = new BarLevel({ width: 20 });
+    bar.add_style_class_name(styleClass);
+    bar.maximum_value = 100;
+    bar.overdrive_start = 100;
+    return bar;
+  }
+
+  /**
+   * Draw the meter in the panel's own foreground colour, so the bars stay
+   * monochrome: white on a dark panel, black on a light one.
+   */
+  _applyMeterColors() {
+    if (!this._sessionBar || !this._indicator) return;
+    const fg = this._indicator.get_theme_node().get_foreground_color();
+    const rgb = `${fg.red}, ${fg.green}, ${fg.blue}`;
+    if (rgb === this._meterColor) return;
+
+    this._meterColor = rgb;
+    const style =
+      `-barlevel-background-color: rgba(${rgb}, 0.35);` +
+      ` -barlevel-active-background-color: rgb(${rgb});`;
+    this._sessionBar.set_style(style);
+    this._weeklyBar.set_style(style);
+  }
+
+  /**
+   * Build the popup: HIG-style provider tabs, a rebuildable content section,
+   * and a footer row with the title, the active provider caption, refresh and
+   * preferences.
+   */
+  _buildMenu() {
+    const menu = this._indicator.menu;
+    menu.box.add_style_class_name("codexbar-popup");
+
+    this._tabsBox = new St.BoxLayout({
+      style_class: "codexbar-tabs",
+      orientation: Clutter.Orientation.HORIZONTAL,
+      visible: false,
+    });
+    menu.box.add_child(this._tabsBox);
+
+    this._contentSection = new PopupMenu.PopupMenuSection();
+    menu.addMenuItem(this._contentSection);
+
+    this._footerBox = new St.BoxLayout({
+      style_class: "codexbar-footer",
+      orientation: Clutter.Orientation.HORIZONTAL,
+      x_expand: true,
+    });
+    this._footerBox.add_child(
+      new St.Label({
+        text: _("CodexBar"),
+        style_class: "codexbar-title",
+        y_align: Clutter.ActorAlign.CENTER,
+      })
+    );
+    this._menuSubtitle = captionLabel("", {
+      x_expand: true,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this._menuSubtitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+    this._footerBox.add_child(this._menuSubtitle);
+    this._refreshButton = this._roundButton(
+      "view-refresh-symbolic",
+      _("Refresh Now"),
+      () => this._refreshData()
+    );
+    this._prefsButton = this._roundButton(
+      "preferences-system-symbolic",
+      _("Preferences"),
+      () => {
+        this.openPreferences();
+        menu.close();
+      }
+    );
+    this._footerBox.add_child(this._refreshButton);
+    this._footerBox.add_child(this._prefsButton);
+    menu.box.add_child(this._footerBox);
+  }
+
+  /**
+   * A circular icon button for the menu footer.
+   * @param {string} iconName
+   * @param {string} accessibleName
+   * @param {Function} onClick
+   * @returns {St.Button}
+   */
+  _roundButton(iconName, accessibleName, onClick) {
+    const button = new St.Button({
+      style_class: "codexbar-round-button",
+      child: new St.Icon({
+        icon_name: iconName,
+        icon_size: 16,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      }),
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    button.accessible_name = accessibleName;
+    button.connect("clicked", onClick);
+    return button;
+  }
+
+  /**
    * Called when the extension is disabled.
-   * Se llama cuando la extensión se desactiva.
    */
   disable() {
     if (this._apiClient) {
@@ -230,72 +382,56 @@ export default class CodexBarExtension extends Extension {
       this._copyTimeouts = null;
     }
 
+    if (this._interfaceSettings) {
+      this._interfaceSettings.disconnectObject(this);
+      this._interfaceSettings = null;
+    }
+
+    if (this._themeContext) {
+      this._themeContext.disconnectObject(this);
+      this._themeContext = null;
+    }
+    this._meterColor = null;
+
     if (this._settings) {
       this._settings.disconnectObject(this);
       this._settings = null;
       setCatalog("en", null); // drop the translation catalog with the extension
     }
 
-    if (this._iconFill) {
-      this._iconFill.destroy();
-      this._iconFill = null;
-    }
-    if (this._panelTextBox) {
-      this._panelTextBox.destroy();
-      this._panelTextBox = null;
-    }
-    if (this._percentLabel) {
-      this._percentLabel.destroy();
-      this._percentLabel = null;
-    }
-    if (this._panelBox) {
-      this._panelBox.destroy();
-      this._panelBox = null;
-    }
-    if (this._iconBox) {
-      this._iconBox.destroy();
-      this._iconBox = null;
-    }
-    if (this._headerTitle) {
-      this._headerTitle.destroy();
-      this._headerTitle = null;
-    }
-    if (this._headerBox) {
-      this._headerBox.destroy();
-      this._headerBox = null;
-    }
-    if (this._tabsContainer) {
-      this._tabsContainer.destroy();
-      this._tabsContainer = null;
-    }
-    if (this._contentBox) {
-      this._contentBox.destroy();
-      this._contentBox = null;
-    }
     if (this._indicator) {
       this._indicator.destroy();
       this._indicator = null;
     }
-    if (this._panelTextBox) {
-      this._panelTextBox.destroy();
-      this._panelTextBox = null;
-    }
-    if (this._panelBox) {
-      this._panelBox.destroy();
-      this._panelBox = null;
-    }
 
+    this._tabsBox = null;
+    this._contentSection = null;
+    this._footerBox = null;
+    this._refreshButton = null;
+    this._prefsButton = null;
+    this._menuSubtitle = null;
+    this._meter = null;
+    this._sessionBar = null;
+    this._weeklyBar = null;
+    this._panelTextBox = null;
+    this._panelBox = null;
+
+    this._providers = [];
     this._providersData = [];
+    this._costData = new Map();
     this._activeProviderIndex = 0;
+    this._sessionPercent = null;
+    this._weeklyPercent = null;
 
     nullTokenSchema();
-
   }
 
   /**
-   * Handle settings changes.
+   * Handle provider or refresh-interval settings changes.
    */
   _onSettingsChanged() {
+    if (!this._settings) return;
+
     const providersJson = this._settings.get_string("providers");
     try {
       this._providers = JSON.parse(providersJson);
@@ -310,7 +446,7 @@ export default class CodexBarExtension extends Extension {
 
     // Draw the provider logos right away instead of waiting for the first
     // CLI round-trip, which otherwise leaves the fallback icon up at login.
-    this._updatePanel();
+    this._updateUI();
     this._refreshData();
     this._setupTimeout();
   }
@@ -330,91 +466,27 @@ export default class CodexBarExtension extends Extension {
         () => {
           this._refreshData();
           return GLib.SOURCE_CONTINUE;
-        },
+        }
       );
     }
   }
-
- 
 
   /**
    * Refresh usage data for all enabled providers.
    */
   async _refreshData() {
-    if (this._loading || this._providers.length === 0) return;
+    if (this._loading || !this._settings) return;
+    if (this._providers.length === 0) {
+      this._updateUI();
+      return;
+    }
     this._loading = true;
-
-    if (this._headerTitle)
-      this._headerTitle.set_text(_("CodexBar (Refreshing...)"));
+    this._updateHeader();
 
     logDev("Refreshing usage data...");
 
     if (this._settings.get_boolean("dev-custom-output-enabled")) {
-      const mockName = this._settings.get_string("dev-custom-output-provider-name") || "Mock Provider";
-      const mockJson = this._settings.get_string("dev-custom-output-json") || "[]";
-      logDev(`[Dev Mode] Simulating custom output for provider: ${mockName}`);
-      logDev(`[Dev Mode] Input payload: ${mockJson}`);
-
-      this._providersData = [];
-      try {
-        const parsed = JSON.parse(mockJson);
-        let rawData = Array.isArray(parsed) ? parsed[0] : parsed;
-        let finalLabels = [];
-
-        if (rawData) {
-          const isAntigravity = mockName.toLowerCase() === "antigravity" || rawData.provider === "antigravity";
-          
-          if (rawData.usage) {
-            logDev(`[Dev Mode] Normalizing nested usage object...`);
-            const normalized = this._apiClient.normalizeSummary(
-              rawData.usage,
-              isAntigravity,
-            );
-            rawData.usage = normalized.usage;
-            finalLabels = normalized.labels || [];
-          } else {
-            logDev(`[Dev Mode] Normalizing flat usage object...`);
-            const normalized = this._apiClient.normalizeSummary(
-              rawData,
-              isAntigravity,
-            );
-            rawData = { ...rawData, usage: normalized.usage };
-            finalLabels = normalized.labels || [];
-          }
-        }
-
-        this._providersData[0] = {
-          data: rawData,
-          labels: finalLabels,
-          command: "mock-command",
-        };
-
-        this._providers = [{
-          id: "mock-provider",
-          name: mockName,
-          useApi: false,
-          command: "mock-command",
-        }];
-        this._activeProviderIndex = 0;
-        logDev(`[Dev Mode] Successfully simulated custom output. Labels: [${finalLabels.join(", ")}]`);
-      } catch (error) {
-        logDev(`[Dev Mode] Error parsing/normalizing mock output: ${error.message}`);
-        this._providersData[0] = {
-          error: error.message,
-          command: "mock-command",
-        };
-        this._providers = [{
-          id: "mock-provider",
-          name: mockName,
-          useApi: false,
-          command: "mock-command",
-        }];
-        this._activeProviderIndex = 0;
-      }
-
-      this._loading = false;
-      if (this._headerTitle) this._headerTitle.set_text(_("CodexBar"));
-      this._updateUI();
+      this._loadMockData();
       return;
     }
 
@@ -429,11 +501,44 @@ export default class CodexBarExtension extends Extension {
           let data;
           const token = await loadToken(provider.id);
           if (!token) {
-            logDev(`Error: No token found in keyring for provider: ${provider.name}`);
-            this._providersData[i] = { error: _("No token found in keyring") };
+            // The CLI reads the provider's own credentials from disk, so it
+            // still works when nothing is stored in the keyring.
+            logDev(
+              `No keyring token for ${provider.name}; falling back to the CLI`
+            );
+            const cliCommand =
+              provider.command ||
+              (provider.id
+                ? `codexbar --provider ${provider.id} --format json`
+                : "");
+            if (!cliCommand) {
+              this._providersData[i] = { error: _("No token found in keyring") };
+              continue;
+            }
+            try {
+              this._providersData[i] = this._normalizeCliData(
+                await this._apiClient.fetchCliSummary(
+                  cliCommand,
+                  this._cancellable
+                ),
+                provider
+              );
+            } catch (error) {
+              console.error(
+                error,
+                `CodexBar: error running provider ${provider.name}`
+              );
+              this._providersData[i] = {
+                error: error.message || _("Unknown CLI error"),
+              };
+            }
             continue;
           }
-          data = await this._apiClient.fetchSummary(token, provider.id, this._cancellable);
+          data = await this._apiClient.fetchSummary(
+            token,
+            provider.id,
+            this._cancellable
+          );
 
           let apiLabels = [];
           if (data.labels && data.labels.length > 0) {
@@ -448,26 +553,28 @@ export default class CodexBarExtension extends Extension {
                     const days = Math.round(hours / 24);
                     apiLabels.push(
                       days === 7
-                        ? _("Weekly Window")
-                        : _("%d-Day Window").format(days),
+                        ? _("Weekly")
+                        : formatText(_("%d-Day"), days)
                     );
                   } else {
-                    apiLabels.push(_("%d-Hour Window").format(hours));
+                    apiLabels.push(formatText(_("%d-Hour"), hours));
                   }
                 } else if (win) {
-                  apiLabels.push(_("Usage Window"));
+                  apiLabels.push(_("Usage"));
                 }
-              },
+              }
             );
           }
 
           this._providersData[i] = {
-            data: data,
+            data,
             labels: apiLabels,
           };
           logDev(`Successfully fetched API data for provider: ${provider.name}`);
         } catch (error) {
-          logDev(`API error for provider ${provider.name}: ${error.message || error}`);
+          logDev(
+            `API error for provider ${provider.name}: ${error.message || error}`
+          );
           console.error(error, `CodexBar: API error for ${provider.name}`);
           let msg = error.message;
           if (!msg && error.toString) msg = error.toString();
@@ -483,57 +590,29 @@ export default class CodexBarExtension extends Extension {
         continue;
       }
 
-      logDev(`Executing CLI command for provider ${provider.name}: ${provider.command}`);
+      logDev(
+        `Executing CLI command for provider ${provider.name}: ${provider.command}`
+      );
       try {
         const result = await this._apiClient.fetchCliSummary(
           provider.command,
-          this._cancellable,
+          this._cancellable
         );
         if (!this._cancellable || this._cancellable.is_cancelled()) {
           logDev(`CLI execution cancelled for provider: ${provider.name}`);
           return;
         }
 
-        let rawData = result.data;
-        let finalLabels = result.labels || [];
-
-        if (rawData) {
-          const isAntigravity =
-            provider.id === "antigravity" || rawData.provider === "antigravity";
-
-          if (rawData.usage) {
-            const normalized = this._apiClient.normalizeSummary(
-              rawData.usage,
-              isAntigravity,
-            );
-            rawData.usage = normalized.usage;
-            if (normalized.labels && normalized.labels.length > 0) {
-              finalLabels = normalized.labels;
-            }
-          } else {
-            const normalized = this._apiClient.normalizeSummary(
-              rawData,
-              isAntigravity,
-            );
-            rawData = { ...rawData, usage: normalized.usage };
-            if (normalized.labels && normalized.labels.length > 0) {
-              finalLabels = normalized.labels;
-            }
-          }
-        }
-
-        this._providersData[i] = {
-          data: rawData,
-          labels: finalLabels,
-          command: result.command,
-        };
+        this._providersData[i] = this._normalizeCliData(result, provider);
         logDev(`Successfully executed CLI command for provider: ${provider.name}`);
       } catch (error) {
         if (this._cancellable && !this._cancellable.is_cancelled()) {
-          logDev(`CLI error for provider ${provider.name}: ${error.message || error}`);
+          logDev(
+            `CLI error for provider ${provider.name}: ${error.message || error}`
+          );
           console.error(
             error,
-            `CodexBar: error running provider ${provider.name}`,
+            `CodexBar: error running provider ${provider.name}`
           );
           let msg = error.message;
           if (!msg && error.toString) msg = error.toString();
@@ -547,6 +626,8 @@ export default class CodexBarExtension extends Extension {
     }
 
     if (this._cancellable && !this._cancellable.is_cancelled()) {
+      await this._refreshCostData();
+
       // One timestamp for the whole sequential fetch; the panel countdown is
       // skewed by the fetch duration (seconds). Stamp per provider if needed.
       const fetchedAt = Date.now();
@@ -554,36 +635,262 @@ export default class CodexBarExtension extends Extension {
         if (d) d.fetchedAt = fetchedAt;
       });
       this._loading = false;
-      if (this._headerTitle) this._headerTitle.set_text(_("CodexBar"));
       this._updateUI();
     }
   }
 
   /**
+   * Read `codexbar cost` totals. Optional: older CLIs have no cost command, so
+   * a failure just means the cost card is omitted.
+   */
+  async _refreshCostData() {
+    if (!this._apiClient || !this._providers.length) {
+      this._costData = new Map();
+      return;
+    }
+    try {
+      // Prefer a provider's own command so a custom binary path (Homebrew,
+      // ~/.local/bin) is reused instead of relying on the shell's PATH.
+      const command = this._providers
+        .map((provider) => (provider.command || "").trim())
+        .find((candidate) => candidate.length > 0);
+      this._costData = await this._apiClient.fetchCostSummary(
+        this._cancellable,
+        command || ""
+      );
+      logDev(`Cost totals loaded for ${this._costData.size} provider(s)`);
+    } catch (error) {
+      logDev(`Cost summary unavailable: ${error.message || error}`);
+      this._costData = new Map();
+    }
+  }
+
+  /**
+   * Map a configured provider onto a `codexbar cost` entry key.
+   * @param {object} provider
+   * @returns {string|null}
+   */
+  _costProviderKey(provider) {
+    if (!provider) return null;
+    const id = (provider.id || "").toLowerCase();
+    if (this._costData.has(id)) return id;
+    const name = (provider.name || "").toLowerCase().replace(/[\s-]+/g, "");
+    for (const key of this._costData.keys()) {
+      if (key.toLowerCase().replace(/[\s-]+/g, "") === name) return key;
+    }
+    return null;
+  }
+
+  /**
+   * Render the local cost equivalent for today and the rolling 30 days.
+   * @param {object} provider
+   */
+  _renderCostEstimate(provider) {
+    const key = this._costProviderKey(provider);
+    const entry = key ? this._costData.get(key) : null;
+    if (!entry?.today && !entry?.last30Days) return;
+
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-2",
+    });
+    box.add_child(
+      new St.Label({ text: _("Cost"), style_class: "codexbar-section-title" })
+    );
+
+    const rows = [
+      [_("Today"), entry.today],
+      [_("Last 30 days"), entry.last30Days],
+    ];
+    rows.forEach(([label, totals]) => {
+      if (!totals) return;
+      const row = new St.BoxLayout({
+        orientation: Clutter.Orientation.HORIZONTAL,
+        x_expand: true,
+        style_class: "codexbar-spacing-6",
+      });
+      row.add_child(new St.Label({ text: label, x_expand: true }));
+      row.add_child(
+        new St.Label({
+          text: formatText(
+            _("%s · %s tokens"),
+            formatMoney(totals.cost, totals.currency),
+            formatTokens(totals.tokens)
+          ),
+          style_class: "codexbar-value",
+          x_align: Clutter.ActorAlign.END,
+        })
+      );
+      box.add_child(row);
+    });
+
+    // Only say the numbers are estimates when the CLI actually priced them
+    // that way; reported costs would make the caption wrong.
+    const estimated = [entry.today, entry.last30Days].some(
+      (totals) => totals?.estimated
+    );
+    if (estimated)
+      box.add_child(
+        captionLabel(_("Estimate from local logs at API list price"))
+      );
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Render the developer-mode payload into the provider list.
+   */
+  _loadMockData() {
+    const mockName =
+      this._settings.get_string("dev-custom-output-provider-name") ||
+      "Mock Provider";
+    const mockJson = this._settings.get_string("dev-custom-output-json") || "[]";
+    logDev(`[Dev Mode] Simulating custom output for provider: ${mockName}`);
+    logDev(`[Dev Mode] Input payload: ${mockJson}`);
+
+    this._providersData = [];
+    try {
+      const parsed = JSON.parse(mockJson);
+      let rawData = Array.isArray(parsed) ? parsed[0] : parsed;
+      let finalLabels = [];
+
+      if (rawData) {
+        const isAntigravity =
+          mockName.toLowerCase() === "antigravity" ||
+          rawData.provider === "antigravity";
+
+        if (rawData.usage) {
+          logDev(`[Dev Mode] Normalizing nested usage object...`);
+          const normalized = this._apiClient.normalizeSummary(
+            rawData.usage,
+            isAntigravity
+          );
+          rawData.usage = normalized.usage;
+          finalLabels = normalized.labels || [];
+        } else {
+          logDev(`[Dev Mode] Normalizing flat usage object...`);
+          const normalized = this._apiClient.normalizeSummary(
+            rawData,
+            isAntigravity
+          );
+          rawData = { ...rawData, usage: normalized.usage };
+          finalLabels = normalized.labels || [];
+        }
+      }
+
+      this._providersData[0] = {
+        data: rawData,
+        labels: finalLabels,
+        command: "mock-command",
+        fetchedAt: Date.now(),
+      };
+      this._providers = [
+        {
+          id: "mock-provider",
+          name: mockName,
+          useApi: false,
+          command: "mock-command",
+        },
+      ];
+      this._activeProviderIndex = 0;
+      logDev(
+        `[Dev Mode] Successfully simulated custom output. Labels: [${finalLabels.join(", ")}]`
+      );
+    } catch (error) {
+      logDev(`[Dev Mode] Error parsing/normalizing mock output: ${error.message}`);
+      this._providersData[0] = {
+        error: error.message,
+        command: "mock-command",
+        fetchedAt: Date.now(),
+      };
+      this._providers = [
+        {
+          id: "mock-provider",
+          name: mockName,
+          useApi: false,
+          command: "mock-command",
+        },
+      ];
+      this._activeProviderIndex = 0;
+    }
+
+    this._loading = false;
+    this._updateUI();
+  }
+
+  /**
+   * Update the footer caption and the refresh button's state.
+   */
+  _updateHeader() {
+    if (!this._menuSubtitle) return;
+
+    if (this._refreshButton) this._refreshButton.reactive = !this._loading;
+
+    if (this._loading) {
+      this._menuSubtitle.set_text(_("Refreshing…"));
+      return;
+    }
+
+    if (this._providers.length === 0) {
+      this._menuSubtitle.set_text(_("No providers configured"));
+      return;
+    }
+
+    const fetchedAt = this._providersData.reduce(
+      (latest, entry) => Math.max(latest, entry?.fetchedAt || 0),
+      0
+    );
+
+    if (fetchedAt === 0) {
+      this._menuSubtitle.set_text(_("Not updated yet"));
+      return;
+    }
+    this._menuSubtitle.set_text(
+      formatText(
+        _("Updated %s"),
+        formatRelativeTime((Date.now() - fetchedAt) / 1000, _)
+      )
+    );
+  }
+
+  /**
    * Render the panel text for providers flagged showInPanel, or fall back to
-   * the usage bar when none are.
+   * the session/weekly meter for the active provider.
    */
   _updatePanel() {
-    if (!this._panelTextBox) return;
+    if (!this._panelTextBox || !this._settings) return;
 
     const shown = (this._providers || [])
       .map((provider, index) => ({ provider, entry: this._providersData[index] }))
       .filter(({ provider }) => provider.showInPanel);
+    const showLogos = this._settings.get_boolean("show-logos");
 
-    this._iconBox.visible = shown.length === 0;
+    this._meter.visible = shown.length === 0;
     this._panelTextBox.visible = shown.length > 0;
-    this._panelTextBox.destroy_all_children();
-    if (this._percentLabel) {
-      this._percentLabel.visible = shown.length === 0;
-      this._percentLabel.set_text(
-        `${formatPercent(Math.round(this._activePercent ?? 0))}%`,
-      );
+    this._sessionBar.value = this._sessionPercent ?? 0;
+    this._weeklyBar.value = this._weeklyPercent ?? 0;
+
+    // The bars carry no text, so the accessible name is the only place the
+    // numbers are spoken.
+    const windows = [];
+    if (this._sessionPercent !== null) {
+      windows.push(`${_("Session")} ${Math.round(this._sessionPercent)}%`);
     }
+    if (this._weeklyPercent !== null) {
+      windows.push(`${_("Weekly")} ${Math.round(this._weeklyPercent)}%`);
+    }
+    this._indicator.accessible_name =
+      shown.length === 0 && windows.length > 0
+        ? `${_("CodexBar")} ${windows.join(", ")}`
+        : _("CodexBar usage");
+
     logDev(
       shown.length === 0
-        ? `Panel: battery at ${this._percentLabel?.text}`
-        : `Panel: ${shown.length} provider text segment(s)`,
+        ? `Panel meter: ${windows.join(", ") || "no quota windows"}`
+        : `Panel: ${shown.length} provider text segment(s)`
     );
+
+    this._panelTextBox.destroy_all_children();
 
     const displayMode = this._settings.get_string("display-mode");
     shown.forEach(({ provider, entry }) => {
@@ -591,43 +898,123 @@ export default class CodexBarExtension extends Extension {
         orientation: Clutter.Orientation.HORIZONTAL,
         style_class: "codexbar-panel-segment",
       });
-      const logo = this._getProviderLogo(
-        provider.id || provider.name.toLowerCase(),
-      );
-      if (logo) {
-        logo.set_style_class_name("codexbar-panel-logo");
-        segment.add_child(logo);
-      }
 
       let text;
-      if (!entry) text = "…";
-      else if (entry.error) text = "!";
-      else {
+      if (!entry) {
+        text = `${provider.name}…`;
+      } else if (entry.error) {
+        segment.add_child(
+          new St.Icon({
+            icon_name: "dialog-warning-symbolic",
+            style_class: "codexbar-panel-logo",
+            y_align: Clutter.ActorAlign.CENTER,
+          })
+        );
+        text = provider.name;
+      } else {
         const elapsed = (Date.now() - (entry.fetchedAt || Date.now())) / 1000;
-        text = formatPanelText(entry.data?.usage, displayMode, elapsed, _) || "–";
+        const usageText =
+          formatPanelText(entry.data?.usage, displayMode, elapsed, _) || "";
+        if (showLogos) {
+          const logo = this._getProviderLogo(
+            provider.id || provider.name.toLowerCase()
+          );
+          if (logo) {
+            logo.set_style_class_name("codexbar-panel-logo");
+            segment.add_child(logo);
+          }
+        }
+        // Keep the provider name even when a logo is present: panel segments
+        // are read at a glance and the text must not depend on the icon.
+        text = usageText ? `${provider.name} ${usageText}` : provider.name;
       }
-      if (!logo) text = `${provider.name} ${text}`;
 
       segment.add_child(
-        new St.Label({ text, y_align: Clutter.ActorAlign.CENTER }),
+        new St.Label({ text, y_align: Clutter.ActorAlign.CENTER })
       );
       this._panelTextBox.add_child(segment);
     });
   }
 
   /**
-   * Normalize percentage value.
+   * Percent for one usage window in the configured display mode, or null when
+   * the provider reports no such window.
+   * @param {object} activeData
+   * @param {string} tier
+   * @param {string} displayMode
+   * @returns {number|null}
+   */
+  _windowPercent(activeData, tier, displayMode) {
+    const tierData = activeData?.data?.usage?.[tier];
+    if (!tierData || tierData.usedPercent === undefined) return null;
+    if (this._isDegenerateTier(tierData)) return null;
+    const used = this._normalizePercent(tierData.usedPercent);
+    return displayMode === "remaining" ? 100 - used : used;
+  }
+
+  /**
    * Normalize a percentage value.
    */
   _normalizePercent(value) {
     if (value === undefined || value === null) return 0;
-    let p = parseFloat(value);
+    const p = parseFloat(value);
+    if (!Number.isFinite(p)) return 0;
     return Math.min(100, Math.max(0, p));
   }
 
   /**
+   * A tier with usedPercent:0 and no windowSeconds isn't a real usage window
+   * (e.g. OpenRouter's balance placeholder).
+   */
+  _isDegenerateTier(tierData) {
+    return (
+      !!tierData &&
+      !tierData.windowSeconds &&
+      tierData.usedPercent === 0 &&
+      !tierData.resetDescription
+    );
+  }
+
+  /**
+   * Normalize a codexbar payload into the shape the UI renders. Shared by the
+   * CLI path and the keyring-token fallback so both agree on window labels.
+   * @param {{data: object, labels?: string[], command?: string}} result
+   * @param {object} provider
+   */
+  _normalizeCliData(result, provider) {
+    let rawData = result.data;
+    let labels = result.labels || [];
+
+    if (rawData) {
+      const isAntigravity =
+        provider.id === "antigravity" || rawData.provider === "antigravity";
+
+      if (rawData.usage) {
+        const normalized = this._apiClient.normalizeSummary(
+          rawData.usage,
+          isAntigravity
+        );
+        rawData.usage = normalized.usage;
+        if (normalized.labels && normalized.labels.length > 0) {
+          labels = normalized.labels;
+        }
+      } else {
+        const normalized = this._apiClient.normalizeSummary(
+          rawData,
+          isAntigravity
+        );
+        rawData = { ...rawData, usage: normalized.usage };
+        if (normalized.labels && normalized.labels.length > 0) {
+          labels = normalized.labels;
+        }
+      }
+    }
+
+    return { data: rawData, labels, command: result.command };
+  }
+
+  /**
    * Check if a binary exists in the PATH or standard directories.
-   * Comprueba si existe un binario en el PATH o en directorios estándar.
    */
   _checkBinaryExists(name) {
     if (GLib.find_program_in_path(name)) {
@@ -648,241 +1035,161 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * Update the indicator menu UI.
+   * Update the popup menu for the current providers and settings.
    */
   _updateUI() {
-    if (!this._indicator) return;
+    if (!this._indicator || !this._contentSection || !this._settings) return;
 
-    this._updatePanel();
-    this._tabsContainer.destroy_all_children();
-    this._contentBox.destroy_all_children();
+    this._applyMeterColors();
+    const wasOpen = this._indicator.menu.isOpen;
+    this._contentSection.removeAll();
+    this._updateHeader();
+
+    // Rebuilding while the menu is open replaces the contents in place; a
+    // short fade keeps that from reading as a flash of unstyled rows.
+    if (wasOpen && St.Settings.get().enable_animations) {
+      this._contentSection.box.opacity = 0;
+      this._contentSection.box.ease({
+        opacity: 255,
+        duration: 140,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      });
+    }
 
     const displayMode = this._settings.get_string("display-mode");
     const firstRun = this._settings.get_boolean("first-run");
-
     const codexbarExists = this._checkBinaryExists("codexbar");
     const importerExists = this._checkBinaryExists("codexbar-cookie-importer");
+    const certInstalled = GLib.file_test(
+      "/usr/local/share/ca-certificates/antigravity.crt",
+      GLib.FileTest.EXISTS
+    );
+
+    this._renderTabs(
+      !firstRun && codexbarExists && this._providers.length > 1
+    );
+
+    const activeData = this._providersData[this._activeProviderIndex];
+    this._sessionPercent = this._windowPercent(activeData, "primary", displayMode);
+    this._weeklyPercent = this._windowPercent(activeData, "secondary", displayMode);
+    this._updatePanel();
 
     if (firstRun || !codexbarExists) {
-      this._showWelcomeScreen(codexbarExists, importerExists);
+      this._renderWelcome(codexbarExists, importerExists, certInstalled);
       return;
     }
 
-    let totalPercent = 0;
-    let tierCount = 0;
-
-    const activeData = this._providersData[this._activeProviderIndex];
-    // A tier with usedPercent:0 and no windowSeconds isn't a real usage window
-    // (e.g. OpenRouter's balance placeholder) - derive a meaningful percent from
-    // the Credits detail section instead, or drop the tier if none is available.
-    const creditsPercent = deriveCreditsPercent(
-      normalizeDetailSections(activeData?.data?.usage?.details),
-    );
-    const isDegenerateTier = (tierData) =>
-      !!tierData &&
-      !tierData.windowSeconds &&
-      tierData.usedPercent === 0 &&
-      !tierData.resetDescription;
-
-    if (activeData && activeData.data && activeData.data.usage) {
-      const usage = activeData.data.usage;
-      const tiers = ["primary", "secondary", "tertiary", "quaternary"];
-
-      tiers.forEach((tier) => {
-        if (usage[tier] && usage[tier].usedPercent !== undefined) {
-          if (isDegenerateTier(usage[tier]) && creditsPercent === null) return;
-          let p = isDegenerateTier(usage[tier])
-            ? creditsPercent
-            : this._normalizePercent(usage[tier].usedPercent);
-          totalPercent += displayMode === "remaining" ? 100 - p : p;
-          tierCount++;
-        }
-      });
-
-      if (tierCount === 0 && usage.providerCost && usage.providerCost.limit > 0) {
-        let p = (usage.providerCost.used / usage.providerCost.limit) * 100;
-        totalPercent += displayMode === "remaining" ? 100 - p : p;
-        tierCount++;
-      }
-    }
-
-    let activePercent = tierCount > 0 ? totalPercent / tierCount : 0;
-    this._activePercent = activePercent;
-
-    const showLogos = this._settings.get_boolean("show-logos");
-
-    this._providers.forEach((provider, index) => {
-      let btn = new St.Button({
-        style_class: "codexbar-tab",
-        can_focus: true,
-      });
-
-      let btnBin = new St.BoxLayout({
-        orientation: Clutter.Orientation.HORIZONTAL,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
-      btn.set_child(btnBin);
-
-      if (showLogos) {
-        const logoIcon = this._getProviderLogo(provider.id, provider.name);
-        if (logoIcon) {
-          btnBin.add_child(logoIcon);
-        }
-      }
-
-      btnBin.add_child(
-        new St.Label({
-          text: provider.name || _("Unknown"),
-          y_align: Clutter.ActorAlign.CENTER,
-        }),
-      );
-
-      if (index === this._activeProviderIndex) {
-        btn.add_style_class_name("codexbar-tab-active");
-      }
-      btn.connect("clicked", () => {
-        this._activeProviderIndex = index;
-        this._updateUI();
-      });
-      this._tabsContainer.add_child(btn);
-    });
-
-    if (this._iconFill) {
-      // Interior width of the box (15px - 2*1px border - 2*1px padding = 11px)
-      const totalFillWidth = 11;
-      const fillWidth = Math.max(
-        1,
-        Math.min(
-          totalFillWidth,
-          Math.round((activePercent / 100) * totalFillWidth),
-        ),
-      );
-
-      let color = "#3584e4"; // Adwaita Blue
-      if (displayMode === "remaining") {
-        if (activePercent < 10) color = "#e01b24";
-        else if (activePercent < 25) color = "#ff7800";
-        else if (activePercent < 50) color = "#f6d32d";
-      } else {
-        if (activePercent > 90) color = "#e01b24";
-        else if (activePercent > 75) color = "#ff7800";
-        else if (activePercent > 50) color = "#f6d32d";
-      }
-
-      this._iconFill.set_width(fillWidth);
-      this._iconFill.set_style(`background-color: ${color};`);
-    }
-
     if (this._providers.length === 0) {
-      this._contentBox.add_child(
-        new St.Label({ text: _("No providers configured. Click settings.") }),
-      );
+      this._renderEmpty();
       return;
     }
 
     const activeProvider = this._providers[this._activeProviderIndex];
-    // Reuse activeData already declared above
 
     if (!activeData) {
-      this._contentBox.add_child(new St.Label({ text: _("Loading data...") }));
+      this._addInactiveItem(
+        new St.Label({ text: _("Loading usage…"), x_expand: true })
+      );
       return;
     }
 
     if (activeData.error) {
-      let errorBox = new St.BoxLayout({
-        orientation: Clutter.Orientation.VERTICAL,
-        x_expand: true,
-      });
-
-      let title = new St.Label({
-        text: _("Error: %s").format(activeData.error),
-        style: "color: #ff7800; font-weight: bold; margin-bottom: 10px;",
-      });
-      errorBox.add_child(title);
-
-      if (activeData.stderr) {
-        errorBox.add_child(
-          new St.Label({
-            text: _("Stderr:"),
-            style: "font-weight: bold; font-size: 0.8em; margin-top: 5px;",
-          }),
-        );
-        let scroll = new St.ScrollView({
-          hscrollbar_policy: St.PolicyType.AUTOMATIC,
-          vscrollbar_policy: St.PolicyType.NEVER,
-          style:
-            "background-color: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;",
-        });
-        scroll.add_child(
-          new St.Label({
-            text: activeData.stderr,
-            style: "font-family: monospace; font-size: 0.8em;",
-          }),
-        );
-        errorBox.add_child(scroll);
-      }
-
-      this._contentBox.add_child(errorBox);
+      this._renderError(activeData);
       return;
     }
 
     const data = activeData.data;
     if (!data || !data.usage) {
-      this._contentBox.add_child(
-        new St.Label({ text: _("Invalid JSON format (missing usage)") }),
+      this._addInactiveItem(
+        new St.Label({
+          text: _("Invalid JSON format (missing usage)"),
+          x_expand: true,
+        })
       );
       return;
     }
 
-    const usage = data.usage;
-    const showPacing = this._settings.get_boolean("show-pacing-info");
+    this._renderUsage(activeProvider, activeData, displayMode);
+  }
 
-    if (usage.accountEmail) {
-      let accountBox = new St.BoxLayout({
-        orientation: Clutter.Orientation.VERTICAL,
-        margin_bottom: 15,
+  /**
+   * Add a non-interactive popup item containing arbitrary content.
+   * @param {St.Widget} child
+   * @param {PopupMenu.PopupMenuBase} [section]
+   * @returns {PopupMenu.PopupBaseMenuItem}
+   */
+  _addInactiveItem(child, section = this._contentSection) {
+    const item = new PopupMenu.PopupBaseMenuItem({
+      reactive: false,
+      can_focus: false,
+    });
+    item.add_child(child);
+    section.addMenuItem(item);
+    return item;
+  }
+
+  /**
+   * Provider tabs above the content, as a HIG segmented control: one pill per
+   * provider, the active one on the accent colour.
+   * @param {boolean} show
+   */
+  _renderTabs(show) {
+    this._tabsBox.visible = show;
+    this._tabsBox.destroy_all_children();
+    if (!show) return;
+
+    const showLogos = this._settings.get_boolean("show-logos");
+    this._providers.forEach((provider, index) => {
+      const button = new St.Button({
+        style_class: "codexbar-tab",
+        can_focus: true,
       });
-      accountBox.add_child(
-        new St.Label({
-          text: activeProvider.name,
-          style_class: "codexbar-usage-title",
-          style: "font-size: 1.1em;",
-        }),
-      );
-      let accText = usage.accountEmail;
-      if (usage.loginMethod) accText += ` (${usage.loginMethod})`;
-      const accountDetails = new St.BoxLayout({
+      button.accessible_name = provider.name;
+      if (index === this._activeProviderIndex) {
+        button.add_style_class_name("codexbar-tab-active");
+      }
+
+      const row = new St.BoxLayout({
         orientation: Clutter.Orientation.HORIZONTAL,
-        x_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
       });
-      accountDetails.add_child(subtitleLabel({ text: accText }));
-      if (usage.planType) {
-        const planText =
-          usage.planType.charAt(0).toUpperCase() + usage.planType.slice(1);
-        accountDetails.add_child(
-          subtitleLabel({
-            text: planText,
-            x_align: Clutter.ActorAlign.END,
-            x_expand: true,
-          }),
-        );
+      if (showLogos) {
+        const logo = this._getProviderLogo(provider.id, provider.name);
+        if (logo) {
+          logo.set_style_class_name("codexbar-tab-icon");
+          row.add_child(logo);
+        }
       }
-      accountBox.add_child(accountDetails);
+      row.add_child(
+        new St.Label({
+          text: provider.name,
+          y_align: Clutter.ActorAlign.CENTER,
+        })
+      );
+      button.set_child(row);
+      button.connect("clicked", () => {
+        if (index === this._activeProviderIndex) return;
+        this._activeProviderIndex = index;
+        this._updateUI();
+      });
+      this._tabsBox.add_child(button);
+    });
+  }
 
-      if (usage.updatedAt) {
-        let date = new Date(usage.updatedAt);
-        let dateStr = date.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        accountBox.add_child(
-          subtitleLabel({ text: _("Updated %s").format(dateStr) }),
-        );
-      }
-      this._contentBox.add_child(accountBox);
-    }
+  /**
+   * Render the account summary and every usage window for the active provider.
+   * @param {object} provider
+   * @param {object} activeData
+   * @param {string} displayMode
+   */
+  _renderUsage(provider, activeData, displayMode) {
+    const usage = activeData.data.usage;
+    const showPacing = this._settings.get_boolean("show-pacing-info");
+    const creditsPercent = deriveCreditsPercent(
+      normalizeDetailSections(usage.details)
+    );
 
-    this._renderDetailSections(usage);
+    this._renderAccount(provider, usage);
 
     const tiers = ["primary", "secondary", "tertiary", "quaternary"];
     const discoveredLabels = activeData.labels || [];
@@ -892,11 +1199,11 @@ export default class CodexBarExtension extends Extension {
       let tierData = usage[tier];
       let title = localizeLabel(
         discoveredLabels[tierIdx] ||
-        tier.charAt(0).toUpperCase() + tier.slice(1),
-        _,
+          tier.charAt(0).toUpperCase() + tier.slice(1),
+        _
       );
 
-      if (isDegenerateTier(tierData)) {
+      if (this._isDegenerateTier(tierData)) {
         if (creditsPercent === null) {
           tierData = null;
         } else {
@@ -916,269 +1223,558 @@ export default class CodexBarExtension extends Extension {
     });
 
     usageEntries.forEach((entry) => {
-      if (entry.data && entry.data.usedPercent !== undefined) {
-        hasTiers = true;
-        let tierData = entry.data;
+      if (!entry.data || entry.data.usedPercent === undefined) return;
 
-        this._contentBox.add_child(
-          new St.Label({
-            text: entry.title,
-            style_class: "codexbar-usage-title",
-          }),
-        );
+      hasTiers = true;
+      const tierData = entry.data;
+      const usedPercent = this._normalizePercent(tierData.usedPercent);
+      const percent =
+        displayMode === "remaining" ? 100 - usedPercent : usedPercent;
+      const percentText =
+        displayMode === "remaining"
+          ? formatText(_("%s%% left"), formatPercent(percent))
+          : formatText(_("%s%% used"), formatPercent(percent));
 
-        let progressContainer = new St.BoxLayout({
-          style_class: "codexbar-progress-container",
-        });
-        let p = this._normalizePercent(tierData.usedPercent);
+      const resetText = (
+        tierData.resetAfterSeconds
+          ? formatReset(
+              tierData.resetAfterSeconds,
+              (Date.now() - (activeData.fetchedAt || Date.now())) / 1000,
+              _
+            )
+          : tierData.resetDescription
+      ) || "";
 
-        let percent = displayMode === "remaining" ? 100 - p : p;
-        let labelText =
-          displayMode === "remaining"
-            ? _("%s%% left").format(formatPercent(percent))
-            : _("%s%% used").format(formatPercent(percent));
-
-        let color = "#3584e4";
-        if (displayMode === "remaining") {
-          if (percent < 10) color = "#e01b24";
-          else if (percent < 25) color = "#ff7800";
-          else if (percent < 50) color = "#f6d32d";
-        } else {
-          if (percent > 90) color = "#e01b24";
-          else if (percent > 75) color = "#ff7800";
-          else if (percent > 50) color = "#f6d32d";
+      let paceText = "";
+      if (
+        showPacing &&
+        entry.showPace &&
+        tierData.windowSeconds >= 7 * 24 * 3600
+      ) {
+        const pace = calculateUsagePace(tierData);
+        if (pace) {
+          const roundedReserve = Math.round(pace.reservePercent);
+          paceText =
+            roundedReserve >= 0
+              ? formatText(_("%d%% in reserve"), roundedReserve)
+              : formatText(_("%d%% over pace"), Math.abs(roundedReserve));
         }
-
-        const fullWidth = 290;
-        const barWidth = Math.max(1, Math.round((percent / 100) * fullWidth));
-
-        let progressBar = new St.Widget({
-          style_class: "codexbar-progress-bar",
-          style: `width: ${barWidth}px; background-color: ${color};`,
-        });
-        progressContainer.add_child(progressBar);
-        this._contentBox.add_child(progressContainer);
-
-        const statsBox = new St.BoxLayout({
-          orientation: Clutter.Orientation.HORIZONTAL,
-          x_expand: true,
-        });
-        statsBox.add_child(
-          subtitleLabel({
-            text: labelText,
-            x_align: Clutter.ActorAlign.START,
-          }),
-        );
-        statsBox.add_child(
-          subtitleLabel({
-            text:
-              (tierData.resetAfterSeconds
-                ? formatReset(
-                    tierData.resetAfterSeconds,
-                    (Date.now() - (activeData.fetchedAt || Date.now())) / 1000,
-                    _,
-                  )
-                : tierData.resetDescription) || "",
-            x_align: Clutter.ActorAlign.END,
-            x_expand: true,
-          }),
-        );
-
-        this._contentBox.add_child(statsBox);
-
-        if (showPacing && entry.showPace && tierData.windowSeconds >= 7 * 24 * 3600) {
-          const pace = calculateUsagePace(tierData);
-          if (pace) {
-            const roundedReserve = Math.round(pace.reservePercent);
-            const paceBox = new St.BoxLayout({
-              orientation: Clutter.Orientation.HORIZONTAL,
-              x_expand: true,
-            });
-            paceBox.add_child(
-              subtitleLabel({
-                text:
-                  roundedReserve >= 0
-                    ? _("%d%% in reserve").format(roundedReserve)
-                    : _("%d%% over pace").format(Math.abs(roundedReserve)),
-              }),
-            );
-            paceBox.add_child(
-              subtitleLabel({
-                text:
-                  roundedReserve >= 0
-                    ? _("Lasts until reset")
-                    : _("May run out before reset"),
-                x_align: Clutter.ActorAlign.END,
-                x_expand: true,
-              }),
-            );
-            this._contentBox.add_child(paceBox);
-          }
-        }
-
-        let sep = new St.Widget({
-          style:
-            "height: 1px; background-color: rgba(127,127,127,0.22); margin-bottom: 10px; margin-top: 5px;",
-        });
-        this._contentBox.add_child(sep);
       }
+
+      this._addUsageRow({
+        title: entry.title,
+        percent,
+        warning: displayMode === "remaining" ? percent < 10 : percent > 90,
+        percentText,
+        resetText,
+        paceText,
+      });
     });
 
     if (usage.rateLimitResetCredits?.availableCount !== undefined) {
       const creditCount = usage.rateLimitResetCredits.availableCount;
-      const creditsBox = new St.BoxLayout({
+      const box = new St.BoxLayout({
         orientation: Clutter.Orientation.VERTICAL,
-        style_class: "codexbar-reset-credits",
         x_expand: true,
+        style_class: "codexbar-spacing-2",
       });
-      creditsBox.add_child(
+      box.add_child(
         new St.Label({
           text: _("Limit reset credits"),
-          style_class: "codexbar-usage-title",
-        }),
+          style_class: "codexbar-section-title",
+        })
       );
-      creditsBox.add_child(
-        subtitleLabel({
-          text:
-            creditCount === 1
-              ? _("1 available")
-              : _("%d available").format(creditCount),
-        }),
+      box.add_child(
+        captionLabel(
+          creditCount === 1
+            ? _("1 available")
+            : formatText(_("%d available"), creditCount)
+        )
       );
-      this._contentBox.add_child(creditsBox);
+      this._addInactiveItem(box);
     }
 
     if (!hasTiers && usage.providerCost) {
-      let costBox = new St.BoxLayout({
-        orientation: Clutter.Orientation.VERTICAL,
-        style_class: "codexbar-cost-container",
-        x_expand: true,
-      });
-
-      let costTitleStr = usage.providerCost.period || _("Balance");
-      let costTitle = new St.Label({
-        text: costTitleStr,
-        style_class: "codexbar-cost-title",
-        x_align: Clutter.ActorAlign.CENTER,
-      });
-      costTitle.opacity = SECONDARY_TEXT_OPACITY;
-      costBox.add_child(costTitle);
-
-      let formattedAmount = "";
-      try {
-        let currency = usage.providerCost.currencyCode || "USD";
-        let used = usage.providerCost.used || 0;
-        let limit = usage.providerCost.limit || 0;
-        let formatter = new Intl.NumberFormat(undefined, {
-          style: "currency",
-          currency: currency,
-        });
-        if (limit > 0) {
-          formattedAmount = `${formatter.format(used)} / ${formatter.format(limit)}`;
-        } else {
-          formattedAmount = formatter.format(used);
-        }
-      } catch (e) {
-        let currencySymbol = usage.providerCost.currencyCode === "USD" ? "$" : (usage.providerCost.currencyCode || "");
-        let used = usage.providerCost.used || 0;
-        let limit = usage.providerCost.limit || 0;
-        if (limit > 0) {
-          formattedAmount = `${currencySymbol}${used.toFixed(2)} / ${currencySymbol}${limit.toFixed(2)}`;
-        } else {
-          formattedAmount = `${currencySymbol}${used.toFixed(2)}`;
-        }
-      }
-
-      let costValue = new St.Label({
-        text: formattedAmount,
-        style_class: "codexbar-cost-value",
-        x_align: Clutter.ActorAlign.CENTER,
-      });
-      costBox.add_child(costValue);
-
-      this._contentBox.add_child(costBox);
+      this._renderCost(usage.providerCost);
     }
+
+    this._renderCostEstimate(provider);
+    this._renderDetails(usage);
   }
 
   /**
-   * Render provider-supplied detail sections (codexbar `usage.details`).
-   * @param {object} usage
+   * Render the account email, plan and last-updated line. The provider name is
+   * skipped while the tab bar is visible, because the active tab already
+   * names it.
    */
-  _renderDetailSections(usage) {
+  _renderAccount(provider, usage) {
+    if (!usage.accountEmail) return;
+
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-2",
+    });
+    if (!this._tabsBox.visible) {
+      box.add_child(
+        new St.Label({
+          text: provider.name,
+          style_class: "codexbar-section-title",
+        })
+      );
+    }
+
+    let accountText = usage.accountEmail;
+    if (usage.loginMethod) accountText += ` (${usage.loginMethod})`;
+    box.add_child(captionLabel(accountText));
+
+    if (usage.planType) {
+      const planText =
+        usage.planType.charAt(0).toUpperCase() + usage.planType.slice(1);
+      box.add_child(captionLabel(planText));
+    }
+
+    if (usage.updatedAt) {
+      const date = new Date(usage.updatedAt);
+      if (!Number.isNaN(date.getTime())) {
+        box.add_child(
+          captionLabel(
+            formatText(
+              _("Updated %s"),
+              formatRelativeTime((Date.now() - date.getTime()) / 1000, _)
+            )
+          )
+        );
+      }
+    }
+
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Add one usage window: title and value, a native level bar, then reset and
+   * pacing captions.
+   */
+  _addUsageRow({ title, percent, warning, percentText, resetText, paceText }) {
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-6",
+    });
+
+    const header = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-6",
+    });
+    header.add_child(
+      new St.Label({
+        text: title,
+        x_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
+      })
+    );
+    if (warning) {
+      header.add_child(
+        new St.Icon({
+          icon_name: "dialog-warning-symbolic",
+          style_class: "popup-menu-icon",
+          y_align: Clutter.ActorAlign.CENTER,
+        })
+      );
+    }
+    header.add_child(
+      new St.Label({
+        text: percentText,
+        style_class: "codexbar-value",
+        x_align: Clutter.ActorAlign.END,
+        y_align: Clutter.ActorAlign.CENTER,
+      })
+    );
+    box.add_child(header);
+
+    const bar = new BarLevel({ x_expand: true, y_align: Clutter.ActorAlign.CENTER });
+    bar.add_style_class_name("codexbar-level");
+    bar.maximum_value = 100;
+    bar.overdrive_start = 100;
+    const target = Math.max(0, Math.min(100, percent));
+    if (St.Settings.get().enable_animations) {
+      // Fill from empty so a refresh reads as movement, not a jump.
+      bar.value = 0;
+      bar.ease_property("value", target, {
+        duration: 250,
+        mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+      });
+    } else {
+      bar.value = target;
+    }
+    box.add_child(bar);
+
+    if (resetText || paceText) {
+      const footer = new St.BoxLayout({
+        orientation: Clutter.Orientation.HORIZONTAL,
+        x_expand: true,
+        style_class: "codexbar-spacing-6",
+      });
+      const reset = captionLabel(resetText, {
+        x_expand: true,
+        x_align: Clutter.ActorAlign.START,
+      });
+      reset.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+      footer.add_child(reset);
+      if (paceText) {
+        footer.add_child(
+          captionLabel(paceText, { x_align: Clutter.ActorAlign.END })
+        );
+      }
+      box.add_child(footer);
+    }
+
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Render the balance card used by cost-only providers.
+   */
+  _renderCost(cost) {
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-2",
+    });
+    box.add_child(captionLabel(cost.period || _("Balance")));
+
+    let formattedAmount = "";
+    try {
+      const currency = cost.currencyCode || "USD";
+      const used = cost.used || 0;
+      const limit = cost.limit || 0;
+      const formatter = new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency,
+      });
+      if (limit > 0) {
+        formattedAmount = `${formatter.format(used)} / ${formatter.format(limit)}`;
+      } else {
+        formattedAmount = formatter.format(used);
+      }
+    } catch (e) {
+      const currencySymbol = cost.currencyCode === "USD" ? "$" : cost.currencyCode || "";
+      const used = cost.used || 0;
+      const limit = cost.limit || 0;
+      if (limit > 0) {
+        formattedAmount = `${currencySymbol}${used.toFixed(2)} / ${currencySymbol}${limit.toFixed(2)}`;
+      } else {
+        formattedAmount = `${currencySymbol}${used.toFixed(2)}`;
+      }
+    }
+
+    box.add_child(
+      new St.Label({ text: formattedAmount, style_class: "codexbar-amount" })
+    );
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Render provider-supplied detail sections inside a Details submenu.
+   */
+  _renderDetails(usage) {
     if (!this._settings.get_boolean("show-provider-details")) return;
 
     const sections = normalizeDetailSections(usage?.details);
     if (sections.length === 0) return;
 
-    const detailsBox = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      style_class: "codexbar-details-section",
-      x_expand: true,
-    });
+    const detailsItem = new PopupMenu.PopupSubMenuMenuItem(_("Details"));
 
     sections.forEach((section) => {
-      const groupBox = new St.BoxLayout({
-        orientation: Clutter.Orientation.VERTICAL,
-        style_class: "codexbar-detail-group",
-        x_expand: true,
-      });
-
       if (section.title) {
-        groupBox.add_child(
+        this._addInactiveItem(
           new St.Label({
             text: localizeDetail(section.title, _),
-            style_class: "codexbar-detail-title",
+            style_class: "codexbar-section-title",
           }),
+          detailsItem.menu
         );
       }
 
       section.rows.forEach((row) => {
+        const box = new St.BoxLayout({
+          orientation: Clutter.Orientation.VERTICAL,
+          x_expand: true,
+          style_class: "codexbar-spacing-2",
+        });
+
         const rowBox = new St.BoxLayout({
           orientation: Clutter.Orientation.HORIZONTAL,
           x_expand: true,
+          style_class: "codexbar-spacing-6",
         });
 
-        const labelWidget = new St.Label({
-          text: localizeDetail(row.label, _),
-          style_class: "codexbar-detail-label",
-        });
-        labelWidget.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        labelWidget.opacity = 200;
-        rowBox.add_child(labelWidget);
-
-        const valueWidget = new St.Label({
-          text: localizeDetail(row.value, _),
-          style_class: "codexbar-detail-value",
-          x_align: Clutter.ActorAlign.END,
+        const label = captionLabel(localizeDetail(row.label, _), {
           x_expand: true,
         });
-        valueWidget.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        rowBox.add_child(valueWidget);
+        label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        rowBox.add_child(label);
 
-        groupBox.add_child(rowBox);
+        const value = new St.Label({
+          text: localizeDetail(row.value, _),
+          style_class: "codexbar-value",
+          x_align: Clutter.ActorAlign.END,
+        });
+        value.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        rowBox.add_child(value);
+
+        box.add_child(rowBox);
 
         if (row.secondaryValue) {
-          const noteWidget = new St.Label({
-            text: localizeDetail(row.secondaryValue, _),
-            style_class: "codexbar-detail-note",
-          });
-          noteWidget.clutter_text.line_wrap = true;
-          noteWidget.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
-          noteWidget.opacity = 160;
-          groupBox.add_child(noteWidget);
+          box.add_child(
+            wrappingLabel(localizeDetail(row.secondaryValue, _))
+          );
         }
-      });
 
-      detailsBox.add_child(groupBox);
+        this._addInactiveItem(box, detailsItem.menu);
+      });
     });
 
-    this._contentBox.add_child(detailsBox);
+    this._contentSection.addMenuItem(detailsItem);
   }
 
   /**
-   * Get provider logo as an St.Icon.
-   * Obtener el logo del proveedor como un St.Icon.
+   * Render an error with a recovery hint.
+   */
+  _renderError(activeData) {
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-12",
+    });
+    box.add_child(
+      new St.Icon({
+        icon_name: "dialog-warning-symbolic",
+        style_class: "popup-menu-icon",
+        y_align: Clutter.ActorAlign.START,
+      })
+    );
+
+    const text = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-4",
+    });
+    text.add_child(
+      new St.Label({
+        text: _("Couldn't load usage"),
+        style_class: "codexbar-section-title",
+      })
+    );
+    text.add_child(wrappingLabel(activeData.error));
+    text.add_child(
+      wrappingLabel(_("Check the provider command in Preferences."))
+    );
+    box.add_child(text);
+
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Render the first-run / missing dependency screen.
+   */
+  _renderWelcome(codexbarExists, importerExists, certInstalled) {
+    const intro = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-4",
+    });
+    intro.add_child(
+      new St.Label({
+        text: _("Welcome to CodexBar"),
+        style_class: "codexbar-title",
+      })
+    );
+    intro.add_child(
+      wrappingLabel(_("Track your AI provider usage from the top bar."))
+    );
+    this._addInactiveItem(intro);
+
+    this._addLanguageSwitcher();
+
+    this._addDependency({
+      title: _("CodexBar CLI"),
+      description: _("Required to query AI usage metrics."),
+      installed: codexbarExists,
+      optional: false,
+      command: "brew install steipete/tap/codexbar",
+    });
+
+    this._addDependency({
+      title: _("Cookie Importer"),
+      description: _(
+        "Automatically extracts the Codex (ChatGPT) session cookie from your browser."
+      ),
+      installed: importerExists,
+      optional: true,
+      command:
+        "mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-cookie-importer -o ~/.local/bin/codexbar-cookie-importer && chmod +x ~/.local/bin/codexbar-cookie-importer",
+    });
+
+    this._addDependency({
+      title: _("Antigravity Helper"),
+      description: _(
+        "Trusts the local Antigravity server certificate. Requires administrator privileges."
+      ),
+      installed: certInstalled,
+      optional: true,
+      command:
+        "mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-ssl-helper -o ~/.local/bin/codexbar-ssl-helper && chmod +x ~/.local/bin/codexbar-ssl-helper && codexbar-ssl-helper",
+    });
+
+    this._contentSection.addAction(_("Get Started"), () => {
+      // The settings change rebuilds the popup, so let the activation finish
+      // before the item that received the click is destroyed.
+      GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+        if (!this._indicator || !this._settings) return GLib.SOURCE_REMOVE;
+        this._settings.set_boolean("first-run", false);
+        this._refreshData();
+        return GLib.SOURCE_REMOVE;
+      });
+    });
+  }
+
+  /**
+   * Add a language selector to the welcome screen.
+   */
+  _addLanguageSwitcher() {
+    // Language names stay in their own language; not passed to gettext.
+    const languages = [
+      ["en", "English"],
+      ["es", "Español"],
+      ["pt_BR", "Português (Brasil)"],
+    ];
+    const currentLang = this._settings.get_string("language");
+    const currentName =
+      languages.find(([code]) => code === currentLang)?.[1] ?? "English";
+
+    const item = new PopupMenu.PopupSubMenuMenuItem(
+      formatText(_("Language: %s"), currentName)
+    );
+    languages.forEach(([code, name]) => {
+      const row = new PopupMenu.PopupMenuItem(name);
+      row.setOrnament(
+        code === currentLang
+          ? PopupMenu.Ornament.DOT
+          : PopupMenu.Ornament.NO_DOT
+      );
+      row.accessible_role = Atk.Role.CHECK_MENU_ITEM;
+      row.connect("activate", () => {
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+          if (!this._settings) return GLib.SOURCE_REMOVE;
+          this._settings.set_string("language", code);
+          return GLib.SOURCE_REMOVE;
+        });
+      });
+      item.menu.addMenuItem(row);
+    });
+    this._contentSection.addMenuItem(item);
+  }
+
+  /**
+   * Add one dependency row with a status icon and, when missing, its install
+   * command with a Copy button.
+   */
+  _addDependency({ title, description, installed, optional, command }) {
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-6",
+    });
+
+    const header = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-6",
+    });
+    const iconName = installed
+      ? "object-select-symbolic"
+      : optional
+        ? "dialog-information-symbolic"
+        : "dialog-warning-symbolic";
+    header.add_child(
+      new St.Icon({
+        icon_name: iconName,
+        style_class: "popup-menu-icon",
+        y_align: Clutter.ActorAlign.CENTER,
+      })
+    );
+    header.add_child(
+      new St.Label({
+        text: title,
+        x_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
+      })
+    );
+    header.add_child(
+      captionLabel(
+        installed ? _("Installed") : optional ? _("Optional") : _("Missing")
+      )
+    );
+    box.add_child(header);
+    box.add_child(wrappingLabel(description));
+
+    if (!installed && command) {
+      box.add_child(this._createCommandWithCopyButton(command));
+    }
+
+    this._addInactiveItem(box);
+  }
+
+  /**
+   * Render the no-providers state with a direct route to Preferences.
+   */
+  _renderEmpty() {
+    const box = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-4",
+    });
+    box.add_child(
+      new St.Label({
+        text: _("No providers configured"),
+        style_class: "codexbar-section-title",
+      })
+    );
+    box.add_child(
+      wrappingLabel(_("Add a provider in Preferences to start tracking usage."))
+    );
+    this._addInactiveItem(box);
+
+    this._contentSection.addAction(
+      _("Open Preferences"),
+      () => this.openPreferences(),
+      "preferences-system-symbolic"
+    );
+  }
+
+  /**
+   * Load a provider logo as a Gio.Icon, or null when the asset doesn't exist.
+   * @param {string} key
+   * @returns {Gio.Icon|null}
+   */
+  _loadLogoFile(key) {
+    if (!key) return null;
+    const logoPath = GLib.build_filenamev([
+      this.path,
+      "media",
+      "logos",
+      `${key}-symbolic.svg`,
+    ]);
+    if (!GLib.file_test(logoPath, GLib.FileTest.EXISTS)) return null;
+    return Gio.Icon.new_for_string(logoPath);
+  }
+
+  /**
+   * Get a provider logo as an St.Icon.
    * @param {string} providerId
+   * @param {string} [providerName]
    * @returns {St.Icon|null}
    */
   _getProviderLogo(providerId, providerName = "") {
@@ -1209,23 +1805,13 @@ export default class CodexBarExtension extends Extension {
     const logoFor = (key) => {
       if (!key || tried.has(key)) return null;
       tried.add(key);
-      const logoPath = GLib.build_filenamev([
-        this.path,
-        "media",
-        "logos",
-        `${key}-symbolic.svg`,
-      ]);
-
-      if (GLib.file_test(logoPath, GLib.FileTest.EXISTS)) {
-        const gicon = Gio.Icon.new_for_string(logoPath);
-
-        return new St.Icon({
-          gicon: gicon,
-          icon_size: 16,
-          style_class: "codexbar-tab-icon",
-        });
-      }
-      return null;
+      const gicon = this._loadLogoFile(key);
+      if (!gicon) return null;
+      return new St.Icon({
+        gicon,
+        icon_size: 16,
+        style_class: "codexbar-panel-logo",
+      });
     };
 
     for (const candidate of candidates) {
@@ -1246,264 +1832,50 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * Helper to create a command box with a Copy button.
-   * Crea un contenedor con el comando y un botón para copiar al portapapeles.
+   * Create a command box with a Copy button.
    */
   _createCommandWithCopyButton(commandText) {
-    let box = new St.BoxLayout({
+    const box = new St.BoxLayout({
       orientation: Clutter.Orientation.HORIZONTAL,
       x_expand: true,
-      style:
-        "background-color: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px; margin-top: 4px; spacing: 8px;",
+      style_class: "codexbar-command-box",
     });
 
-    let cmdLabel = new St.Label({
+    const cmdLabel = new St.Label({
       text: commandText,
-      style:
-        "font-family: monospace; font-size: 0.8em; color: #3584e4; y-align: middle;",
+      style_class: "codexbar-command",
       x_expand: true,
+      y_align: Clutter.ActorAlign.CENTER,
     });
     cmdLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
     box.add_child(cmdLabel);
 
-    let copyBtn = new St.Button({
-      style:
-        "padding: 2px 6px; background-color: rgba(127,127,127,0.18); border-radius: 3px; font-size: 0.8em;",
+    const copyBtn = new St.Button({
       label: _("Copy"),
+      style_class: "button flat codexbar-copy-button",
+      can_focus: true,
+      y_align: Clutter.ActorAlign.CENTER,
     });
     copyBtn.connect("clicked", () => {
       const clipboard = St.Clipboard.get_default();
       clipboard.set_text(St.ClipboardType.CLIPBOARD, commandText);
-      copyBtn.label = _("Copied!");
-      let timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
-        copyBtn.label = _("Copy");
-        if (this._copyTimeouts) {
-          const index = this._copyTimeouts.indexOf(timeoutId);
-          if (index > -1) {
-            this._copyTimeouts.splice(index, 1);
+      copyBtn.label = _("Copied");
+      const timeoutId = GLib.timeout_add(
+        GLib.PRIORITY_DEFAULT,
+        1500,
+        () => {
+          copyBtn.label = _("Copy");
+          if (this._copyTimeouts) {
+            const index = this._copyTimeouts.indexOf(timeoutId);
+            if (index > -1) this._copyTimeouts.splice(index, 1);
           }
+          return GLib.SOURCE_REMOVE;
         }
-        return GLib.SOURCE_REMOVE;
-      });
-      if (this._copyTimeouts) {
-        this._copyTimeouts.push(timeoutId);
-      }
+      );
+      if (this._copyTimeouts) this._copyTimeouts.push(timeoutId);
     });
     box.add_child(copyBtn);
 
     return box;
-  }
-
-  /**
-   * Show welcome screen for first-run or missing dependencies.
-   * Muestra la pantalla de bienvenida para la primera ejecución o dependencias faltantes.
-   */
-  _showWelcomeScreen(codexbarExists, importerExists) {
-    let box = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      x_expand: true,
-      style: "padding: 12px; spacing: 10px;",
-    });
-
-    box.add_child(
-      new St.Label({
-        text: _("Welcome to CodexBar!"),
-        style: "font-weight: bold; font-size: 1.25em; margin-bottom: 5px;",
-      }),
-    );
-
-    // Language names stay in their own language; not passed to gettext.
-    const langRow = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-      style: "spacing: 6px; margin-bottom: 8px;",
-      x_align: Clutter.ActorAlign.START,
-    });
-    langRow.add_child(
-      new St.Label({
-        text: _("Language:"),
-        style: "font-size: 0.95em; margin-top: 4px;",
-      }),
-    );
-    const currentLang = this._settings.get_string("language");
-    [
-      ["en", "English"],
-      ["es", "Español"],
-      ["pt_BR", "Português (Brasil)"],
-    ].forEach(([code, name]) => {
-      const langBtn = new St.Button({
-        label: name,
-        style_class: "codexbar-tab",
-        style:
-          code === currentLang
-            ? "background-color: #3584e4;"
-            : "background-color: rgba(127,127,127,0.15);",
-      });
-      langBtn.connect("clicked", () =>
-        this._settings.set_string("language", code),
-      );
-      langRow.add_child(langBtn);
-    });
-    box.add_child(langRow);
-
-    box.add_child(
-      new St.Label({
-        text: _("Please configure your system dependencies:"),
-        style: "font-size: 0.95em; color: #2ec27e; margin-bottom: 10px;",
-      }),
-    );
-
-    let dep1Box = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      style:
-        "margin-bottom: 10px; background-color: rgba(127,127,127,0.10); padding: 8px; border-radius: 6px;",
-    });
-    let dep1Header = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-    });
-
-    let dep1StatusColor = codexbarExists ? "#2ec27e" : "#e01b24";
-    let dep1StatusText = codexbarExists ? _("● Installed") : _("● Missing");
-
-    dep1Header.add_child(
-      new St.Label({
-        text: _("1. CodexBar CLI  "),
-        style: "font-weight: bold;",
-      }),
-    );
-    dep1Header.add_child(
-      new St.Label({
-        text: dep1StatusText,
-        style: `color: ${dep1StatusColor}; font-size: 0.85em; font-weight: bold;`,
-      }),
-    );
-    dep1Box.add_child(dep1Header);
-
-    dep1Box.add_child(
-      subtitleLabel({
-        text: _("Required to query AI usage metrics."),
-        style:
-          "font-size: 0.85em; margin-bottom: 4px; margin-top: 2px;",
-      }),
-    );
-
-    if (!codexbarExists) {
-      dep1Box.add_child(
-        this._createCommandWithCopyButton("brew install steipete/tap/codexbar"),
-      );
-    }
-    box.add_child(dep1Box);
-
-    let dep2Box = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      style:
-        "margin-bottom: 10px; background-color: rgba(127,127,127,0.10); padding: 8px; border-radius: 6px;",
-    });
-    let dep2Header = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-    });
-
-    let dep2StatusColor = importerExists ? "#2ec27e" : "#ff7800";
-    let dep2StatusText = importerExists
-      ? _("● Installed")
-      : _("● Optional (only for codex users and only if you want not to find and copy manually a cookie value)");
-
-    dep2Header.add_child(
-      new St.Label({
-        text: _("2. Cookie Importer  "),
-        style: "font-weight: bold;",
-      }),
-    );
-    dep2Header.add_child(
-      new St.Label({
-        text: dep2StatusText,
-        style: `color: ${dep2StatusColor}; font-size: 0.85em; font-weight: bold;`,
-      }),
-    );
-    dep2Box.add_child(dep2Header);
-
-    dep2Box.add_child(
-      subtitleLabel({
-        text: _("Enables browser auto cookie extraction for Codex (ChatGPT). This cookie is used to authenticate on the usage api of OpenAI"),
-        style:
-          "font-size: 0.85em; margin-bottom: 4px; margin-top: 2px;",
-      }),
-    );
-
-    if (!importerExists) {
-      dep2Box.add_child(
-        this._createCommandWithCopyButton(
-          "mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-cookie-importer -o ~/.local/bin/codexbar-cookie-importer && chmod +x ~/.local/bin/codexbar-cookie-importer",
-        ),
-      );
-    }
-    box.add_child(dep2Box);
-
-    let dep3Box = new St.BoxLayout({
-      orientation: Clutter.Orientation.VERTICAL,
-      style:
-        "margin-bottom: 10px; background-color: rgba(127,127,127,0.10); padding: 8px; border-radius: 6px;",
-    });
-    let dep3Header = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-    });
-
-    // Verify if the certificate is already installed/trusted
-    const systemCaCertsPath = "/usr/local/share/ca-certificates/antigravity.crt";
-    const certInstalled = GLib.file_test(systemCaCertsPath, GLib.FileTest.EXISTS);
-    let dep3StatusColor = certInstalled ? "#2ec27e" : "#ff7800";
-    let dep3StatusText = certInstalled
-      ? _("● Installed")
-      : _("● Optional (for Antigravity)");
-
-    dep3Header.add_child(
-      new St.Label({
-        text: _("3. AGY Server Certificate Trust Helper  "),
-        style: "font-weight: bold;",
-      }),
-    );
-    dep3Header.add_child(
-      new St.Label({
-        text: dep3StatusText,
-        style: `color: ${dep3StatusColor}; font-size: 0.85em; font-weight: bold;`,
-      }),
-    );
-    dep3Box.add_child(dep3Header);
-
-    dep3Box.add_child(
-      subtitleLabel({
-        text: _("Required to trust the local Antigravity server certificate. Requires privilegie elevation"),
-        style:
-          "font-size: 0.85em; margin-bottom: 4px; margin-top: 2px;",
-      }),
-    );
-
-    if (!certInstalled) {
-      dep3Box.add_child(
-        this._createCommandWithCopyButton(
-          "mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/InledGroup/codexbar-gnome/main/scripts/codexbar-ssl-helper -o ~/.local/bin/codexbar-ssl-helper && chmod +x ~/.local/bin/codexbar-ssl-helper && codexbar-ssl-helper",
-        ),
-      );
-    }
-    box.add_child(dep3Box);
-
-    let btnBox = new St.BoxLayout({
-      orientation: Clutter.Orientation.HORIZONTAL,
-      style: "margin-top: 10px;",
-      x_align: Clutter.ActorAlign.CENTER,
-    });
-
-    let closeBtn = new St.Button({
-      label: _("Get Started!"),
-      style_class: "codexbar-tab",
-      style: "background-color: #3584e4;",
-    });
-    closeBtn.connect("clicked", () => {
-      this._settings.set_boolean("first-run", false);
-      this._refreshData();
-    });
-    btnBox.add_child(closeBtn);
-    box.add_child(btnBox);
-
-    this._contentBox.add_child(box);
   }
 }

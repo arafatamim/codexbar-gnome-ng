@@ -1,169 +1,158 @@
-.codexbar-panel-icon-box {
-    height: 7px;
-    width: 15px;
-    border: 1px solid rgba(255,255,255,0.75);
-    border-radius: 2px;
-    padding: 1px;
-    margin: 0 4px;
+/* Panel indicator */
+
+/*
+ * Two stacked meter bars like the macOS app: the session window on top, the
+ * weekly window below. The colours come from the panel foreground, so the
+ * meter stays monochrome on dark and light panels (see _applyMeterColors).
+ */
+.codexbar-panel-meter {
+ spacing: 2px;
 }
 
-.codexbar-panel-icon-fill {
-    height: 3px;
-    background-color: rgba(255,255,255,0.75);
-    border-radius: 1px;
+.codexbar-panel-meter-session,
+.codexbar-panel-meter-weekly {
+ -barlevel-overdrive-color: #c01c28;
+ -barlevel-overdrive-separator-width: 1px;
 }
 
-.codexbar-panel-percent {
-    margin-right: 4px;
+.codexbar-panel-meter-session {
+ -barlevel-height: 7px;
 }
 
-.codexbar-header-button {
-    padding: 4px;
-    border-radius: 4px;
-    margin-left: 5px;
+.codexbar-panel-meter-weekly {
+ -barlevel-height: 5px;
 }
 
-.codexbar-header-button:hover {
-    background-color: rgba(127, 127, 127, 0.18);
-}
+/* Provider tabs, as a HIG segmented control */
 
-.codexbar-popup {
-    min-width: 320px;
-    max-width: 360px;
-}
-
-.codexbar-header {
-    padding: 10px;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.22);
-}
-
-.codexbar-tabs-container {
-    padding: 10px;
+.codexbar-tabs {
+ padding: 8px 12px 4px;
+ spacing: 2px;
 }
 
 .codexbar-tab {
-    padding: 5px 10px;
-    border-radius: 8px;
-    margin-right: 5px;
+ padding: 4px 12px;
+ border-radius: 999px;
 }
 
-.codexbar-tab-active {
-    background-color: rgba(127, 127, 127, 0.22);
-    font-weight: bold;
+.codexbar-tab:hover {
+ background-color: rgba(127, 127, 127, 0.18);
+}
+
+.codexbar-tab-active,
+.codexbar-tab-active:hover {
+ background-color: -st-accent-color;
+ color: -st-accent-fg-color;
 }
 
 .codexbar-tab-icon {
-    margin-right: 6px;
-    icon-size: 16px;
-    -st-icon-style: symbolic;
+ icon-size: 14px;
+ margin-right: 6px;
+ -st-icon-style: symbolic;
 }
 
-.codexbar-usage-section {
-    padding: 15px;
-}
-
-.codexbar-usage-title {
-    font-size: 0.9em;
-    font-weight: bold;
-    margin-bottom: 5px;
-}
-
-.codexbar-usage-subtitle {
-    font-size: 0.8em;
-    margin-bottom: 10px;
-}
-
-.codexbar-progress-container {
-    height: 6px;
-    background-color: rgba(127, 127, 127, 0.20);
-    border-radius: 3px;
-    margin-bottom: 15px;
-    overflow: hidden;
-    width: 290px;
-}
-
-.codexbar-progress-bar {
-    height: 6px;
-    border-radius: 3px;
-}
-
-.codexbar-reset-credits {
-    border-top: 1px solid rgba(127, 127, 127, 0.22);
-    padding-top: 12px;
-    margin-top: 2px;
-}
-
-.codexbar-details-section {
-    margin-bottom: 8px;
-}
-
-.codexbar-detail-group {
-    margin-bottom: 10px;
-}
-
-.codexbar-detail-title {
-    font-size: 0.9em;
-    font-weight: bold;
-    margin-bottom: 4px;
-}
-
-.codexbar-detail-label {
-    font-size: 0.8em;
-    margin-bottom: 1px;
-}
-
-.codexbar-detail-value {
-    font-size: 0.8em;
-    font-weight: bold;
-    margin-bottom: 1px;
-    padding-left: 12px;
-}
-
-.codexbar-detail-note {
-    font-size: 0.75em;
-    font-style: italic;
-    margin-left: 10px;
-    margin-bottom: 3px;
-}
+/* Footer: title, caption and circular buttons */
 
 .codexbar-footer {
-    padding: 10px;
-    border-top: 1px solid rgba(127, 127, 127, 0.22);
+ padding: 8px 8px 10px 12px;
+ spacing: 8px;
+ border-top: 1px solid rgba(127, 127, 127, 0.2);
 }
 
-.codexbar-footer-button {
-    padding: 8px;
-    border-radius: 6px;
-    font-size: 0.9em;
+.codexbar-round-button {
+ width: 28px;
+ height: 28px;
+ border-radius: 999px;
+ padding: 0;
 }
 
-.codexbar-footer-button:hover {
-    background-color: rgba(127, 127, 127, 0.18);
+.codexbar-round-button:hover {
+ background-color: rgba(127, 127, 127, 0.22);
 }
 
-.codexbar-cost-container {
-    background-color: rgba(127, 127, 127, 0.10);
-    border: 1px solid rgba(127, 127, 127, 0.18);
-    border-radius: 8px;
-    padding: 15px;
-    margin-bottom: 10px;
-}
-
-.codexbar-cost-title {
-    font-size: 0.95em;
-    font-weight: bold;
-}
-
-.codexbar-cost-value {
-    font-size: 1.8em;
-    font-weight: bold;
-}
-
-.codexbar-panel-segment {
-    spacing: 4px;
-    margin: 0 6px;
+.codexbar-round-button:active {
+ background-color: rgba(127, 127, 127, 0.32);
 }
 
 .codexbar-panel-logo {
-    icon-size: 16px;
+ icon-size: 16px;
+ -st-icon-style: symbolic;
+}
+
+.codexbar-panel-segment {
+ spacing: 6px;
+ margin-left: 6px;
+}
+
+/* Popup menu */
+
+.codexbar-popup {
+ min-width: 20em;
+ max-width: 26em;
+}
+
+.codexbar-title {
+ font-size: 1.18em;
+ font-weight: bold;
+}
+
+.codexbar-section-title {
+ font-weight: bold;
+}
+
+.codexbar-caption {
+ font-size: 0.9em;
+}
+
+.codexbar-value {
+ font-weight: bold;
+}
+
+.codexbar-amount {
+ font-size: 1.6em;
+ font-weight: bold;
+}
+
+.codexbar-command {
+ font-family: monospace;
+ font-size: 0.9em;
+}
+
+.codexbar-command-box {
+ spacing: 6px;
+ margin-top: 6px;
+}
+
+/* HIG spacing scale (4/6/12) for boxes that don't have a dedicated class */
+.codexbar-spacing-2 {
+ spacing: 2px;
+}
+
+.codexbar-spacing-4 {
+ spacing: 4px;
+}
+
+.codexbar-spacing-6 {
+ spacing: 6px;
+}
+
+.codexbar-spacing-12 {
+ spacing: 12px;
+}
+
+.codexbar-copy-button {
+ padding: 3px 12px;
+ min-height: 1.5em;
+}
+
+/*
+ * Native level bar (ui/barLevel.js). The accent colour and its translucent
+ * track follow the user's accent colour in both light and dark variants.
+ */
+.codexbar-level {
+ -barlevel-height: 4px;
+ -barlevel-background-color: st-transparentize(-st-accent-color, 0.8);
+ -barlevel-active-background-color: -st-accent-color;
+ -barlevel-overdrive-color: #c01c28;
+ -barlevel-overdrive-separator-width: 1px;
 }
