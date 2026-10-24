@@ -194,7 +194,6 @@ export default class CodexBarExtension extends Extension {
     // Keep the panel's reset countdown ticking between refreshes.
     this._panelTickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
       this._updatePanel();
-      this._updateHeader(); // keep "Updated 5m ago" from going stale
       return GLib.SOURCE_CONTINUE;
     });
   }
@@ -319,15 +318,10 @@ export default class CodexBarExtension extends Extension {
       new St.Label({
         text: _("CodexBar"),
         style_class: "codexbar-title",
+        x_expand: true,
         y_align: Clutter.ActorAlign.CENTER,
       })
     );
-    this._menuSubtitle = captionLabel("", {
-      x_expand: true,
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    this._menuSubtitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-    this._footerBox.add_child(this._menuSubtitle);
     this._refreshButton = this._roundButton(
       "view-refresh-symbolic",
       _("Refresh Now"),
@@ -428,7 +422,6 @@ export default class CodexBarExtension extends Extension {
     this._footerBox = null;
     this._refreshButton = null;
     this._prefsButton = null;
-    this._menuSubtitle = null;
     this._meter = null;
     this._sessionBar = null;
     this._weeklyBar = null;
@@ -500,7 +493,7 @@ export default class CodexBarExtension extends Extension {
       return;
     }
     this._loading = true;
-    this._updateHeader();
+    this._updateRefreshButton();
 
     // Cheap while the cached registry is fresh; keeps icons current in long
     // sessions without another timer.
@@ -833,38 +826,10 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * Update the footer caption and the refresh button's state.
+   * Disable the refresh button while a fetch is in flight.
    */
-  _updateHeader() {
-    if (!this._menuSubtitle) return;
-
+  _updateRefreshButton() {
     if (this._refreshButton) this._refreshButton.reactive = !this._loading;
-
-    if (this._loading) {
-      this._menuSubtitle.set_text(_("Refreshing…"));
-      return;
-    }
-
-    if (this._providers.length === 0) {
-      this._menuSubtitle.set_text(_("No providers configured"));
-      return;
-    }
-
-    const fetchedAt = this._providersData.reduce(
-      (latest, entry) => Math.max(latest, entry?.fetchedAt || 0),
-      0
-    );
-
-    if (fetchedAt === 0) {
-      this._menuSubtitle.set_text(_("Not updated yet"));
-      return;
-    }
-    this._menuSubtitle.set_text(
-      formatText(
-        _("Updated %s"),
-        formatRelativeTime((Date.now() - fetchedAt) / 1000, _)
-      )
-    );
   }
 
   /**
@@ -1055,7 +1020,7 @@ export default class CodexBarExtension extends Extension {
     this._applyMeterColors();
     const wasOpen = this._indicator.menu.isOpen;
     this._contentSection.removeAll();
-    this._updateHeader();
+    this._updateRefreshButton();
 
     // Rebuilding while the menu is open replaces the contents in place; a
     // short fade keeps that from reading as a flash of unstyled rows.

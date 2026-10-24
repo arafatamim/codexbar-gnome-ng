@@ -2,7 +2,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: CodexBar\n"
 "Report-Msgid-Bugs-To: https://github.com/InledGroup/codexbar-gnome/issues\n"
-"POT-Creation-Date: 2026-10-24 15:15+0600\n"
+"POT-Creation-Date: 2026-10-24 15:41+0600\n"
 "PO-Revision-Date: 2026-10-16 20:30-0300\n"
 "Last-Translator: Lucas Motta "
 "<104871819+lucaswotta@users.noreply.github.com>\n"
@@ -13,191 +13,179 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
 
-#: extension.js:144 extension.js:306 extension.js:875
+#: extension.js:150 extension.js:319 extension.js:863
 msgid "CodexBar"
 msgstr "CodexBar"
 
-#: extension.js:319
+#: extension.js:327
 msgid "Refresh Now"
 msgstr "Atualizar agora"
 
-#: extension.js:324
+#: extension.js:332
 msgid "Preferences"
 msgstr "Preferências"
 
-#: extension.js:515
+#: extension.js:531
 msgid "No token found in keyring"
 msgstr "Nenhum token encontrado no chaveiro"
 
-#: extension.js:532 extension.js:619
+#: extension.js:548 extension.js:635
 msgid "Unknown CLI error"
 msgstr "Erro desconhecido da CLI"
 
-#: extension.js:556 extension.js:871 localize.js:102 localize.js:182
+#: extension.js:572 extension.js:859 localize.js:102 localize.js:182
 msgid "Weekly"
 msgstr "Semanal"
 
-#: extension.js:557 localize.js:180
+#: extension.js:573 localize.js:180
 #, javascript-format
 msgid "%d-Day"
 msgstr "%d dias"
 
-#: extension.js:560 localize.js:179
+#: extension.js:576 localize.js:179
 #, javascript-format
 msgid "%d-Hour"
 msgstr "%d horas"
 
-#: extension.js:563 localize.js:181
+#: extension.js:579 localize.js:181
 msgid "Usage"
 msgstr "Uso"
 
-#: extension.js:581
+#: extension.js:597
 msgid "Unknown API error"
 msgstr "Erro desconhecido da API"
 
-#: extension.js:589
+#: extension.js:605
 msgid "No command configured"
 msgstr "Nenhum comando configurado"
 
-#: extension.js:699
+#: extension.js:715
 msgid "Cost"
 msgstr "Custo"
 
-#: extension.js:703
+#: extension.js:719
 msgid "Today"
 msgstr "Hoje"
 
-#: extension.js:704
+#: extension.js:720
 msgid "Last 30 days"
 msgstr "Últimos 30 dias"
 
-#: extension.js:717
+#: extension.js:733
 #, javascript-format
 msgid "%s · %s tokens"
 msgstr "%s · %s tokens"
 
-#: extension.js:821
-msgid "Refreshing…"
-msgstr "Atualizando…"
-
-#: extension.js:826 extension.js:1732
-msgid "No providers configured"
-msgstr "Nenhum provedor configurado"
-
-#: extension.js:836
-msgid "Not updated yet"
-msgstr "Ainda não atualizado"
-
-#: extension.js:841 extension.js:1334
-#, javascript-format
-msgid "Updated %s"
-msgstr "Atualizado %s"
-
-#: extension.js:868 localize.js:101
+#: extension.js:856 localize.js:101
 msgid "Session"
 msgstr "Sessão"
 
-#: extension.js:876
+#: extension.js:864
 msgid "CodexBar usage"
 msgstr "Uso do CodexBar"
 
-#: extension.js:1082
+#: extension.js:1068
 msgid "Loading usage…"
 msgstr "Carregando uso…"
 
-#: extension.js:1096
+#: extension.js:1082
 msgid "Invalid JSON format (missing usage)"
 msgstr "JSON inválido (falta o campo usage)"
 
-#: extension.js:1202
+#: extension.js:1188
 msgid "Credits"
 msgstr "Créditos"
 
-#: extension.js:1205 extension.js:1436
+#: extension.js:1191 extension.js:1422
 msgid "Balance"
 msgstr "Saldo"
 
-#: extension.js:1213
+#: extension.js:1199
 msgid "Code review"
 msgstr "Code review"
 
-#: extension.js:1226
+#: extension.js:1212
 #, javascript-format
 msgid "%s%% left"
 msgstr "%s%% restante"
 
-#: extension.js:1227
+#: extension.js:1213
 #, javascript-format
 msgid "%s%% used"
 msgstr "%s%% usado"
 
-#: extension.js:1250
+#: extension.js:1236
 #, javascript-format
 msgid "%d%% in reserve"
 msgstr "%d%% de folga"
 
-#: extension.js:1251
+#: extension.js:1237
 #, javascript-format
 msgid "%d%% over pace"
 msgstr "%d%% acima do ritmo"
 
-#: extension.js:1274
+#: extension.js:1260
 msgid "Limit reset credits"
 msgstr "Créditos de reset de limite"
 
-#: extension.js:1281
+#: extension.js:1267
 msgid "1 available"
 msgstr "1 disponível"
 
-#: extension.js:1282
+#: extension.js:1268
 #, javascript-format
 msgid "%d available"
 msgstr "%d disponíveis"
 
-#: extension.js:1478
+#: extension.js:1320
+#, javascript-format
+msgid "Updated %s"
+msgstr "Atualizado %s"
+
+#: extension.js:1464
 msgid "Details"
 msgstr "Detalhes"
 
-#: extension.js:1557
+#: extension.js:1543
 msgid "Couldn't load usage"
 msgstr "Não foi possível carregar o uso"
 
-#: extension.js:1563
+#: extension.js:1549
 msgid "Check the provider command in Preferences."
 msgstr "Verifique o comando do provedor nas Preferências."
 
-#: extension.js:1581
+#: extension.js:1567
 msgid "Welcome to CodexBar"
 msgstr "Bem-vindo ao CodexBar"
 
-#: extension.js:1586
+#: extension.js:1572
 msgid "Track your AI provider usage from the top bar."
 msgstr "Acompanhe o uso dos seus provedores de IA na barra superior."
 
-#: extension.js:1593
+#: extension.js:1579
 msgid "CodexBar CLI"
 msgstr "CLI do CodexBar"
 
-#: extension.js:1594
+#: extension.js:1580
 msgid "Required to query AI usage metrics."
 msgstr "Necessária para consultar o uso das IAs."
 
-#: extension.js:1601
+#: extension.js:1587
 msgid "Cookie Importer"
 msgstr "Importador de cookies"
 
-#: extension.js:1603
+#: extension.js:1589
 msgid ""
 "Automatically extracts the Codex (ChatGPT) session cookie from your browser."
 msgstr ""
 "Extrai automaticamente o cookie de sessão do Codex (ChatGPT) do seu "
 "navegador."
 
-#: extension.js:1612
+#: extension.js:1598
 msgid "Antigravity Helper"
 msgstr "Assistente do Antigravity"
 
-#: extension.js:1614
+#: extension.js:1600
 msgid ""
 "Trusts the local Antigravity server certificate. Requires administrator "
 "privileges."
@@ -205,40 +193,44 @@ msgstr ""
 "Confia no certificado do servidor local do Antigravity. Requer privilégios "
 "de administrador."
 
-#: extension.js:1622
+#: extension.js:1608
 msgid "Get Started"
 msgstr "Começar"
 
-#: extension.js:1649
+#: extension.js:1635
 #, javascript-format
 msgid "Language: %s"
 msgstr "Idioma: %s"
 
-#: extension.js:1708
+#: extension.js:1694
 msgid "Installed"
 msgstr "Instalado"
 
-#: extension.js:1708
+#: extension.js:1694
 msgid "Optional"
 msgstr "Opcional"
 
-#: extension.js:1708
+#: extension.js:1694
 msgid "Missing"
 msgstr "Ausente"
 
-#: extension.js:1737
+#: extension.js:1718
+msgid "No providers configured"
+msgstr "Nenhum provedor configurado"
+
+#: extension.js:1723
 msgid "Add a provider in Preferences to start tracking usage."
 msgstr "Adicione um provedor nas Preferências para começar a acompanhar o uso."
 
-#: extension.js:1742
+#: extension.js:1728
 msgid "Open Preferences"
 msgstr "Abrir Preferências"
 
-#: extension.js:1845 extension.js:1858
+#: extension.js:1840 extension.js:1853
 msgid "Copy"
 msgstr "Copiar"
 
-#: extension.js:1853
+#: extension.js:1848
 msgid "Copied"
 msgstr "Copiado"
 
@@ -653,6 +645,12 @@ msgstr "Expira em %s"
 #, javascript-format
 msgid " in %s"
 msgstr " em %s"
+
+#~ msgid "Refreshing…"
+#~ msgstr "Atualizando…"
+
+#~ msgid "Not updated yet"
+#~ msgstr "Ainda não atualizado"
 
 #~ msgid "Estimate from local logs at API list price"
 #~ msgstr "Estimativa dos registros locais pelo preço de tabela da API"
