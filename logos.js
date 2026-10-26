@@ -2,7 +2,7 @@ import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import Soup from "gi://Soup";
 
-import { matchAgent } from "./logoMatch.js";
+import { matchAgent, siteLogoCandidates } from "./logoMatch.js";
 
 // GJS does not promisify Soup's async methods automatically; without this the
 // awaited send_and_read_async() call fails the argument-count check.
@@ -12,18 +12,21 @@ Gio._promisify(
   "send_and_read_finish"
 );
 
-// Provider icons come from the ACP agent registry instead of the bundle:
-// assets stay current without shipping a copy per provider. Registry and
-// icons are cached under the user cache dir and revalidated with ETags.
+// Remote fallback for provider icons that are not bundled: the official
+// codexbar.app site first, then the ACP agent registry for providers the site
+// does not list. Both are cached under the user cache dir, and downloads are
+// revalidated with ETags.
 
+const SITE_LOGO_BASE = "https://codexbar.app/logos";
 const REGISTRY_URL =
   "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const REGISTRY_TTL = 6 * 60 * 60; // seconds between revalidation attempts
 const ICON_TTL = 30 * 24 * 60 * 60; // icons rarely change; revalidate monthly
+const MISSING_TTL = 7 * 24 * 60 * 60; // remember a 404 before trying again
 const RETRY_AFTER = 10 * 60; // seconds before retrying a failed download
 
 /**
- * Disk cache for registry metadata and provider icons.
+ * Disk cache for registry metadata and remote provider icons.
  */
 export class LogoCache {
   /**
@@ -50,53 +53,83 @@ export class LogoCache {
   }
 
   /**
-   * The registry entry for a provider, or null.
+   * Cached icon path for a provider, preferring codexbar.app over the registry.
    * @param {string} providerId
    * @param {string} [providerName]
-   * @returns {object|null}
+   * @returns {string|null}
    */
-  agent(providerId, providerName = "") {
-    return matchAgent(this._agents, providerId, providerName);
+  providerIconPath(providerId, providerName = "") {
+    for (const slug of siteLogoCandidates(providerId, providerName)) {
+      const path = this._iconPathFor(`site-${slug}`);
+      if (path) return path;
+    }
+    const agent = matchAgent(this._agents, providerId, providerName);
+    return agent?.icon ? this._iconPathFor(agent.id) : null;
   }
 
   /**
-   * Cached icon path for an agent, or null when it has not been downloaded.
-   * @param {object} agent Registry entry.
-   * @returns {string|null}
+   * Download a provider icon when missing or stale, preferring the official
+   * codexbar.app art and falling back to the ACP registry. Concurrent calls
+   * share one request.
+   * @param {string} providerId
+   * @param {string} [providerName]
+   * @param {Gio.Cancellable|null} [cancellable]
+   * @returns {Promise<string|null>} Cached path, or null on failure.
    */
-  iconPath(agent) {
-    if (!agent?.id) return null;
-    const path = this._iconFile(agent);
-    return GLib.file_test(path, GLib.FileTest.EXISTS) ? path : null;
+  async ensureProviderIcon(providerId, providerName = "", cancellable = null) {
+    for (const slug of siteLogoCandidates(providerId, providerName)) {
+      const key = `site:${slug}`;
+      if (this._missing(key)) continue;
+
+      const path = await this._ensureIcon(
+        `${SITE_LOGO_BASE}/${slug}.svg`,
+        key,
+        `site-${slug}`,
+        cancellable
+      );
+      if (path) return path;
+      // A 404 lets the next candidate run; a network failure should not
+      // multiply its timeout across every candidate and the registry.
+      if (!this._missing(key)) break;
+    }
+
+    const agent = matchAgent(this._agents, providerId, providerName);
+    if (!agent?.icon || !agent.id) return null;
+    return this._ensureIcon(agent.icon, agent.id, agent.id, cancellable);
   }
 
   /**
    * Download an icon when missing or stale. Concurrent calls share one request.
-   * @param {object} agent Registry entry.
-   * @param {Gio.Cancellable|null} [cancellable]
+   * @param {string} url Remote SVG.
+   * @param {string} key Manifest key.
+   * @param {string} file Cache file key.
+   * @param {Gio.Cancellable|null} cancellable
    * @returns {Promise<string|null>} Cached path, or null on failure.
    */
-  ensureIcon(agent, cancellable = null) {
-    if (!agent?.icon || !agent.id) return Promise.resolve(null);
-
-    const cached = this.iconPath(agent);
-    const meta = this._manifest[agent.id];
+  _ensureIcon(url, key, file, cancellable) {
+    const cached = this._iconPathFor(file);
+    const meta = this._manifest[key];
     const now = this._now();
     if (cached && meta && now - (meta.fetchedAt || 0) < ICON_TTL)
       return Promise.resolve(cached);
-    if (now - (this._failedAt.get(agent.id) || 0) < RETRY_AFTER)
+    if (now - (this._failedAt.get(key) || 0) < RETRY_AFTER)
       return Promise.resolve(cached);
-    if (this._pending.has(agent.id)) return this._pending.get(agent.id);
+    if (this._pending.has(key)) return this._pending.get(key);
 
     const download = (async () => {
       try {
-        let res = await this._get(agent.icon, meta?.etag, cancellable);
+        let res = await this._get(url, meta?.etag, cancellable);
         // A validator can survive the cached file (cleared cache dir): ask
         // again without it so the bytes come back.
         if (res.status === Soup.Status.NOT_MODIFIED && !cached)
-          res = await this._get(agent.icon, null, cancellable);
+          res = await this._get(url, null, cancellable);
         if (res.status === Soup.Status.NOT_MODIFIED) {
-          this._manifest[agent.id] = { etag: res.etag, fetchedAt: this._now() };
+          this._manifest[key] = { etag: res.etag, fetchedAt: this._now() };
+          this._writeJson(this._manifestPath(), this._manifest);
+          return cached;
+        }
+        if (res.status === Soup.Status.NOT_FOUND) {
+          this._manifest[key] = { missing: true, fetchedAt: this._now() };
           this._writeJson(this._manifestPath(), this._manifest);
           return cached;
         }
@@ -105,26 +138,36 @@ export class LogoCache {
         const bytes = res.bytes?.get_data();
         if (!bytes?.length) throw new Error("empty icon");
         GLib.mkdir_with_parents(this._iconsDir, 0o755);
-        const path = this._iconFile(agent);
+        const path = this._iconFile(file);
         if (!GLib.file_set_contents(path, bytes))
           throw new Error(`cannot write ${path}`);
-        this._manifest[agent.id] = { etag: res.etag, fetchedAt: this._now() };
+        this._manifest[key] = { etag: res.etag, fetchedAt: this._now() };
         this._writeJson(this._manifestPath(), this._manifest);
         this._onChange?.();
         return path;
       } catch (error) {
-        this._failedAt.set(agent.id, this._now());
+        this._failedAt.set(key, this._now());
         if (!cancellable?.is_cancelled?.())
           console.error(
-            `CodexBar: logo download failed for ${agent.id}: ${error.message}`
+            `CodexBar: logo download failed for ${key}: ${error.message}`
           );
         return cached;
       } finally {
-        this._pending.delete(agent.id);
+        this._pending.delete(key);
       }
     })();
-    this._pending.set(agent.id, download);
+    this._pending.set(key, download);
     return download;
+  }
+
+  /**
+   * Whether a URL was recently answered with a 404.
+   * @param {string} key Manifest key.
+   * @returns {boolean}
+   */
+  _missing(key) {
+    const meta = this._manifest[key];
+    return !!meta?.missing && this._now() - (meta.fetchedAt || 0) < MISSING_TTL;
   }
 
   /**
@@ -171,10 +214,15 @@ export class LogoCache {
     this._manifest = {};
   }
 
-  _iconFile(agent) {
+  _iconPathFor(file) {
+    const path = this._iconFile(file);
+    return GLib.file_test(path, GLib.FileTest.EXISTS) ? path : null;
+  }
+
+  _iconFile(file) {
     // The -symbolic suffix is what makes St recolour a file icon with the
     // theme foreground; without it the SVG's currentColor renders as black.
-    const name = String(agent.id).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const name = String(file).replace(/[^a-zA-Z0-9._-]/g, "_");
     return GLib.build_filenamev([this._iconsDir, `${name}-symbolic.svg`]);
   }
 

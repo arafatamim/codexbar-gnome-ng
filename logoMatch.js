@@ -1,9 +1,11 @@
-// Match a provider against the ACP agent registry.
+// Resolve provider ids to logo sources: codexbar.app first, the ACP agent
+// registry as fallback.
 //
-// Provider ids come from codexbar-cli (claude, codex, opencodego, ...) and the
-// registry names agents its own way (claude-acp, codex-acp, github-copilot-cli,
-// ...), so neither ids nor names line up exactly. Normalise both sides and look
-// for containment instead of keeping an alias table in sync with the registry.
+// Provider ids come from codexbar-cli (claude, codex, opencodego, ...). The
+// website names almost every logo file after the provider id, while the
+// registry names agents its own way (claude-acp, codex-acp,
+// github-copilot-cli, ...). Normalise both sides and look for containment
+// instead of keeping an alias table in sync with the registry.
 //
 // Kept free of gi:// imports so it can be unit tested.
 
@@ -11,6 +13,73 @@ const normalise = (value) =>
   String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
+
+// codexbar.app serves one SVG per provider at /logos/<slug>.svg. Most slugs are
+// the provider id; these ship under a different or themed file name.
+const SITE_LOGO_SLUGS = {
+  codex: "codex-dark",
+  openai: "codex-dark",
+  azureopenai: "codex-dark",
+  factory: "droid-dark",
+  opencode: "opencode-dark",
+  zai: "zai-dark",
+  kiro: "kiro-dark",
+  synthetic: "synthetic-dark",
+  abacus: "abacus-ai-dark",
+  codebuff: "codebuff-dark",
+  vertexai: "vertex-ai",
+  jetbrains: "jetbrains-ai",
+  alibabatokenplan: "alibaba",
+  moonshot: "kimi",
+};
+
+/**
+ * Logo file keys to try for a provider: id first, name as a last resort for
+ * custom rows.
+ * @param {string} providerId
+ * @param {string} [providerName]
+ * @returns {string[]}
+ */
+const logoCandidates = (providerId, providerName = "") => {
+  const candidates = [];
+  for (const value of [providerId, providerName]) {
+    const text = String(value || "")
+      .toLowerCase()
+      .trim();
+    const slugs = [text.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")];
+    // Display names are spaced ("Command Code") while logo files are compact.
+    if (/\s/.test(text)) slugs.push(text.replace(/[^a-z0-9]+/g, ""));
+    for (const slug of slugs) {
+      if (slug && !candidates.includes(slug)) candidates.push(slug);
+    }
+  }
+  return candidates;
+};
+
+/**
+ * Keys for the bundled icons (`media/logos/<key>-symbolic.svg`).
+ * @param {string} providerId
+ * @param {string} [providerName]
+ * @returns {string[]}
+ */
+export const bundledLogoCandidates = (providerId, providerName = "") =>
+  logoCandidates(providerId, providerName);
+
+/**
+ * Logo slugs to try on codexbar.app, provider id first and name as a last
+ * resort for custom rows.
+ * @param {string} providerId
+ * @param {string} [providerName]
+ * @returns {string[]}
+ */
+export const siteLogoCandidates = (providerId, providerName = "") => {
+  const candidates = [];
+  for (const slug of logoCandidates(providerId, providerName)) {
+    const candidate = SITE_LOGO_SLUGS[slug] ?? slug;
+    if (!candidates.includes(candidate)) candidates.push(candidate);
+  }
+  return candidates;
+};
 
 // Two-letter fragments such as "go" match half the registry, so require four
 // characters on both sides of a containment test.

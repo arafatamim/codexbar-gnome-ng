@@ -14,7 +14,7 @@ Fork of [InledGroup/codexbar-gnome](https://github.com/InledGroup/codexbar-gnome
 - Two-bar panel meter (session, weekly), or text segments for providers shown
   in the panel
 - Provider tabs, account details, and cost totals for today and the last 30 days
-- Provider logos from the ACP registry, cached locally
+- Provider logos bundled from the official CodexBar repository
 - Custom providers: anything that prints codexbar JSON works
 - English, Spanish and Brazilian Portuguese; times follow the desktop clock
   format
@@ -108,10 +108,13 @@ tr '\0' '\n' < /proc/$(pgrep -x gnome-shell)/environ | grep OPENROUTER_API_KEY
 - The panel meter shows the session window on top and the weekly window below,
   drawn in the panel's own text colour, so it stays monochrome and follows the
   panel's dynamic tint.
-- Logos come from the [ACP agent registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
-  matched against the provider id or name, and cached under
-  `~/.cache/codexbar/logos` for a month. DeepSeek, OpenRouter, Perplexity and
-  Ollama are not listed there and use the bundled icons.
+- Every provider icon from
+  [CodexBar's Resources](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBar/Resources)
+  is bundled, so logos appear instantly and offline. Providers added upstream
+  after a release fall back to [codexbar.app](https://codexbar.app/logos/), then
+  the
+  [ACP agent registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
+  cached under `~/.cache/codexbar/logos` for a month.
 
 ## Differences from upstream
 
@@ -120,8 +123,8 @@ tr '\0' '\n' < /proc/$(pgrep -x gnome-shell)/environ | grep OPENROUTER_API_KEY
   panels.
 - **A popup you can read.** One percentage per window, a warning icon only when
   a limit gets close, and local spend for today and the last 30 days.
-- **Logos, handled for you.** Provider icons come from the ACP registry and are
-  cached locally.
+- **Logos, handled for you.** Provider icons from the official CodexBar
+  repository are bundled, with remote art as backup for new providers.
 - **Calls that just work.** Commands are parsed and quoted, `codexbar` is found
   automatically, `--format json` is filled in when missing, and errors read as
   plain sentences.

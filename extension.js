@@ -19,6 +19,7 @@ import {
 } from "./usageApi.js";
 import { loadToken, nullTokenSchema } from "./secret.js";
 import { LogoCache } from "./logos.js";
+import { bundledLogoCandidates } from "./logoMatch.js";
 import {
   mergeCodexbarProviders,
   parseIdList,
@@ -130,10 +131,12 @@ export default class CodexBarExtension extends Extension {
     this._loading = false;
     this._cancellable = new Gio.Cancellable();
 
-    // Provider icons come from the ACP registry, cached on disk; a download
-    // that lands during the session repaints the tabs and panel segments.
+    // Every provider CodexBar ships has a bundled icon; remote art
+    // (codexbar.app, then the ACP registry) covers providers added upstream
+    // after this build. A download that lands during the session repaints the
+    // tabs and panel segments.
     this._logos = new LogoCache(() => this._updateUI());
-    this._logos.refresh(this._cancellable);
+    this._logoIcons = new Map();
 
     this._applyLanguage();
 
@@ -166,12 +169,12 @@ export default class CodexBarExtension extends Extension {
     this._themeContext = St.ThemeContext.get_for_stage(global.stage);
     this._themeContext.connectObject(
       "changed",
-      () => this._applyMeterColors(),
+      () => this._refreshLogos(),
       this
     );
     this._indicator.connectObject(
       "style-changed",
-      () => this._applyMeterColors(),
+      () => this._refreshLogos(),
       this
     );
 
@@ -229,6 +232,15 @@ export default class CodexBarExtension extends Extension {
       return mo.query_exists(null) ? mo.load_contents(null)[1] : null;
     });
     logDev(`UI language: ${currentLanguage()}`);
+  }
+
+  /**
+   * Rebuild provider icons when the theme or the panel's foreground changes.
+   */
+  _refreshLogos() {
+    this._logoIcons?.clear();
+    this._applyMeterColors();
+    this._updateUI();
   }
 
   /**
@@ -395,6 +407,7 @@ export default class CodexBarExtension extends Extension {
       this._logos.destroy();
       this._logos = null;
     }
+    this._logoIcons = null;
 
     if (this._timeoutId) {
       GLib.source_remove(this._timeoutId);
@@ -541,10 +554,6 @@ export default class CodexBarExtension extends Extension {
     }
     this._loading = true;
     this._updateRefreshButton();
-
-    // Cheap while the cached registry is fresh; keeps icons current in long
-    // sessions without another timer.
-    this._logos?.refresh(this._cancellable);
 
     logDev("Refreshing usage data...");
 
@@ -1177,13 +1186,6 @@ export default class CodexBarExtension extends Extension {
         orientation: Clutter.Orientation.HORIZONTAL,
         y_align: Clutter.ActorAlign.CENTER,
       });
-      if (showLogos) {
-        const logo = this._getProviderLogo(provider.id, provider.name);
-        if (logo) {
-          logo.set_style_class_name("codexbar-tab-icon");
-          row.add_child(logo);
-        }
-      }
       const label = new St.Label({
         text: provider.name,
         y_align: Clutter.ActorAlign.CENTER,
@@ -1199,7 +1201,7 @@ export default class CodexBarExtension extends Extension {
         this._activeProviderIndex = index;
         this._updateUI();
       });
-      return button;
+      return { button, row, provider };
     });
 
     // Tabs are measured while parented, then moved into rows that fit the
@@ -1207,7 +1209,24 @@ export default class CodexBarExtension extends Extension {
     // a single row cannot hold four provider names. While the popup is closed
     // it is not in the stage, so the names cannot be measured and the row is
     // laid out again on open.
-    tabs.forEach((tab) => this._tabsBox.add_child(tab));
+    tabs.forEach(({ button }) => this._tabsBox.add_child(button));
+
+    // Icons are added once the button is parented, so their colour can follow
+    // the tab's own foreground (the active tab uses the accent foreground).
+    if (showLogos) {
+      for (const { button, row, provider } of tabs) {
+        const logo = this._getProviderLogo(
+          provider.id,
+          provider.name,
+          button.get_theme_node()?.get_foreground_color()
+        );
+        if (!logo) continue;
+        logo.set_style_class_name("codexbar-tab-icon");
+        row.insert_child_at_index(logo, 0);
+      }
+    }
+
+    const buttons = tabs.map(({ button }) => button);
     // Wrap against the popup's maximum width, which is independent of the
     // current layout (the tabs' own width otherwise feeds back into it).
     let available = 0;
@@ -1221,7 +1240,7 @@ export default class CodexBarExtension extends Extension {
     const rowWidths = [0];
     const widths = new Map();
     const labelWidths = new Map();
-    for (const tab of tabs) {
+    for (const tab of buttons) {
       const width = available > 0 ? tab.get_preferred_width(-1)[1] : 0;
       widths.set(tab, width);
       if (available > 0) {
@@ -1859,11 +1878,11 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * Load a provider logo as a Gio.Icon, or null when the asset doesn't exist.
+   * Path to a bundled provider logo, or null when the asset doesn't exist.
    * @param {string} key
-   * @returns {Gio.Icon|null}
+   * @returns {string|null}
    */
-  _loadLogoFile(key) {
+  _logoPath(key) {
     if (!key) return null;
     const logoPath = GLib.build_filenamev([
       this.path,
@@ -1871,77 +1890,122 @@ export default class CodexBarExtension extends Extension {
       "logos",
       `${key}-symbolic.svg`,
     ]);
-    if (!GLib.file_test(logoPath, GLib.FileTest.EXISTS)) return null;
-    return Gio.Icon.new_for_string(logoPath);
+    return GLib.file_test(logoPath, GLib.FileTest.EXISTS) ? logoPath : null;
   }
 
   /**
-   * Get a provider logo as an St.Icon.
-   * Art comes from the ACP registry; providers the registry does not list yet
-   * still use the bundled SVGs.
-   * @param {string} providerId
-   * @param {string} [providerName]
-   * @returns {St.Icon|null}
+   * Build a Gio.Icon whose SVG paints in the given foreground colour.
+   *
+   * St only recolours symbolic icons looked up by name from the icon theme,
+   * and its CSS wrapper rewrites `fill` but not `stroke`. Both would leave the
+   * bundled art in its source colour, so bake the colour into a cached copy.
+   * @param {string} sourcePath
+   * @param {Clutter.Color|null} color
+   * @returns {Gio.Icon|null}
    */
-  _getProviderLogo(providerId, providerName = "") {
-    if (!providerId && !providerName) return null;
+  _tintedLogoIcon(sourcePath, color) {
+    if (!sourcePath || !color) return null;
 
-    const agent = this._logos?.agent(providerId, providerName);
-    if (agent) {
-      // Download on first use; ensureIcon revalidates stale icons in the
-      // background and calls back into _updateUI when new art arrives.
-      this._logos.ensureIcon(agent, this._cancellable);
-      const path = this._logos.iconPath(agent);
-      if (path)
-        return new St.Icon({
-          gicon: Gio.Icon.new_for_string(path),
-          icon_size: 16,
-          style_class: "codexbar-panel-logo",
-        });
+    const channel = (value) =>
+      Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+    const hex = `#${channel(color.red)}${channel(color.green)}${channel(color.blue)}`;
+    const cacheKey = `${sourcePath}:${hex}`;
+    const cached = this._logoIcons?.get(cacheKey);
+    if (cached) return cached;
+
+    let svg;
+    try {
+      const [ok, bytes] = GLib.file_get_contents(sourcePath);
+      if (!ok) return null;
+      svg = new TextDecoder().decode(bytes);
+    } catch (error) {
+      logDev(`Cannot read logo ${sourcePath}: ${error.message}`);
+      return null;
     }
 
-    // Normalize ID and name: lowercase and replace spaces with dashes
-    const candidates = [
-      (providerId || "").toLowerCase().replace(/\s+/g, "-"),
-      (providerName || "").toLowerCase().replace(/\s+/g, "-"),
-    ].filter((c) => c.length > 0);
+    const tinted = svg
+      .replace(/(\b(?:fill|stroke|stop-color)=")(?!none")[^"]*"/g, `$1${hex}"`)
+      .replace(/(\b(?:fill|stroke|stop-color)\s*:\s*)(?!none)[^;"']*/g, `$1${hex}`);
 
-    // Only the providers missing from the registry are still bundled.
-    const knownKeys = [
-      "deepseek",
-      "openrouter",
-      "perplexity",
-      "ollama",
-    ];
+    // Include the source contents in the file name so an updated icon or a
+    // theme switch never reuses a stale tinted copy.
+    const sum = GLib.compute_checksum_for_string(
+      GLib.ChecksumType.SHA256,
+      svg,
+      -1
+    ).slice(0, 12);
+    const dir = GLib.build_filenamev([
+      GLib.get_user_cache_dir(),
+      "codexbar",
+      "logos",
+      "tinted",
+    ]);
+    if (GLib.mkdir_with_parents(dir, 0o755) !== 0) return null;
 
-    const tried = new Set();
-    const logoFor = (key) => {
-      if (!key || tried.has(key)) return null;
-      tried.add(key);
-      const gicon = this._loadLogoFile(key);
-      if (!gicon) return null;
+    const base = GLib.path_get_basename(sourcePath)
+      .replace(/-symbolic\.svg$/, "")
+      .replace(/\.svg$/, "");
+    const path = GLib.build_filenamev([
+      dir,
+      `${base}-${sum}-${hex.slice(1)}.svg`,
+    ]);
+    if (
+      !GLib.file_test(path, GLib.FileTest.EXISTS) &&
+      !GLib.file_set_contents(path, tinted)
+    )
+      return null;
+
+    const icon = Gio.Icon.new_for_string(path);
+    this._logoIcons?.set(cacheKey, icon);
+    return icon;
+  }
+
+  /**
+   * Get a provider logo as an St.Icon, painted in the parent's foreground.
+   * Every provider shipped by CodexBar is bundled, so the common path is
+   * instant and offline. Remote art (codexbar.app, then the ACP registry)
+   * covers providers added upstream after this build.
+   * @param {string} providerId
+   * @param {string} [providerName]
+   * @param {Clutter.Color|null} [color] Defaults to the panel foreground.
+   * @returns {St.Icon|null}
+   */
+  _getProviderLogo(providerId, providerName = "", color = null) {
+    if (!providerId && !providerName) return null;
+
+    const foreground =
+      color ?? this._indicator?.get_theme_node()?.get_foreground_color();
+
+    for (const key of bundledLogoCandidates(providerId, providerName)) {
+      const logoPath = this._logoPath(key);
+      if (!logoPath) continue;
       return new St.Icon({
-        gicon,
+        gicon:
+          this._tintedLogoIcon(logoPath, foreground) ??
+          Gio.Icon.new_for_string(logoPath),
         icon_size: 16,
         style_class: "codexbar-panel-logo",
       });
-    };
-
-    for (const candidate of candidates) {
-      const icon = logoFor(candidate);
-      if (icon) return icon;
     }
 
-    for (const candidate of candidates) {
-      for (const key of knownKeys) {
-        if (candidate.includes(key)) {
-          const icon = logoFor(key);
-          if (icon) return icon;
-        }
-      }
-    }
+    // Download on first use; ensureProviderIcon revalidates stale icons in the
+    // background and calls back into _updateUI when new art arrives.
+    this._logos?.refresh(this._cancellable);
+    this._logos?.ensureProviderIcon(
+      providerId,
+      providerName,
+      this._cancellable
+    );
+    const path = this._logos?.providerIconPath(providerId, providerName);
+    if (!path) return null;
 
-    return null;
+    return new St.Icon({
+      gicon:
+        this._tintedLogoIcon(path, foreground) ??
+        Gio.Icon.new_for_string(path),
+      icon_size: 16,
+      style_class: "codexbar-panel-logo",
+    });
   }
 
   /**

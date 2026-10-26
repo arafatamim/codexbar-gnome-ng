@@ -26,7 +26,11 @@ import {
   parseGeneratedCommand,
   parseIdList,
 } from "./providerSources.js";
-import { matchAgent } from "./logoMatch.js";
+import {
+  bundledLogoCandidates,
+  matchAgent,
+  siteLogoCandidates,
+} from "./logoMatch.js";
 
 const client = new UsageApiClient();
 
@@ -1148,3 +1152,45 @@ expectAgent("go", "Go", null);
 // A provider absent from the registry yields nothing.
 expectAgent("deepseek", "DeepSeek", null);
 console.log("✓ Provider logos resolve against the ACP registry by fuzzy id/name match");
+
+// codexbar.app is the primary logo source; a few files use another slug.
+const expectCandidates = (id, name, expected) => {
+  const actual = siteLogoCandidates(id, name);
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error(
+      `siteLogoCandidates(${id}, ${name}) => ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`
+    );
+};
+expectCandidates("commandcode", "Command Code", ["commandcode", "command-code"]);
+expectCandidates("codex", "Codex", ["codex-dark"]);
+expectCandidates("opencodego", "OpenCode Go", ["opencodego", "opencode-go"]);
+expectCandidates("factory", "Droid", ["droid-dark", "droid"]);
+expectCandidates("moonshot", "Moonshot", ["kimi"]);
+// A custom row with no site slug still resolves through its display name.
+expectCandidates("custom-1", "Command Code", [
+  "custom-1",
+  "command-code",
+  "commandcode",
+]);
+expectCandidates("", "DeepSeek", ["deepseek"]);
+expectCandidates("", "", []);
+console.log("✓ Provider logos resolve to codexbar.app slugs, with aliases for renamed files");
+
+// Bundled icons are named after the provider id, so no site aliases apply.
+const expectBundleKeys = (id, name, expected) => {
+  const actual = bundledLogoCandidates(id, name);
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error(
+      `bundledLogoCandidates(${id}, ${name}) => ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`
+    );
+};
+expectBundleKeys("commandcode", "Command Code", ["commandcode", "command-code"]);
+expectBundleKeys("moonshot", "Moonshot", ["moonshot"]);
+expectBundleKeys("factory", "Droid", ["factory", "droid"]);
+expectBundleKeys("custom-1", "Command Code", [
+  "custom-1",
+  "command-code",
+  "commandcode",
+]);
+expectBundleKeys("", "", []);
+console.log("✓ Bundled logo keys follow the provider id, then the display name");
