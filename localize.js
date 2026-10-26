@@ -155,18 +155,13 @@ export const formatDuration = (seconds) => {
 };
 
 /**
- * "Resets at 23:09 (in 3h 9min)" or "Resets 21/10 at 20:59 (in 5d 1h)".
- * Computed at render time so the countdown doesn't go stale between refreshes.
+ * "Resets in 3h 9min". Computed at render time so the countdown doesn't go
+ * stale between refreshes.
  */
-export const formatReset = (resetAfterSeconds, elapsedSeconds, tr, now = new Date()) => {
+export const formatResetIn = (resetAfterSeconds, elapsedSeconds, tr) => {
   const seconds = (resetAfterSeconds || 0) - (elapsedSeconds || 0);
   if (!(seconds > 0)) return "";
-  const resetDate = new Date(now.getTime() + seconds * 1000);
-  const time = formatClockTime(resetDate);
-  if (resetDate.toDateString() === now.toDateString())
-    return fill(tr("Resets at %s (in %s)"), time, formatDuration(seconds));
-  const day = resetDate.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit" });
-  return fill(tr("Resets %s at %s (in %s)"), day, time, formatDuration(seconds));
+  return fill(tr("Resets in %s"), formatDuration(seconds));
 };
 
 /** Window labels, built by the extension or sent by the CLI ("Gemini 5-hour"). */

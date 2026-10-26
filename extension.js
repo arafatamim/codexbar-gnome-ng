@@ -12,6 +12,7 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { BarLevel } from "resource:///org/gnome/shell/ui/barLevel.js";
 import {
+  calculateRunOutSeconds,
   calculateUsagePace,
   deriveCreditsPercent,
   normalizeDetailSections,
@@ -30,7 +31,8 @@ import {
   formatPanelText,
   formatRelativeTime,
   formatPercent,
-  formatReset,
+  formatDuration,
+  formatResetIn,
   formatText,
   localizeDetail,
   localizeLabel,
@@ -137,6 +139,7 @@ export default class CodexBarExtension extends Extension {
     // tabs and panel segments.
     this._logos = new LogoCache(() => this._updateUI());
     this._logoIcons = new Map();
+    this._logoForeground = null;
 
     this._applyLanguage();
 
@@ -166,10 +169,13 @@ export default class CodexBarExtension extends Extension {
     // top bar, maximized window) only swaps style classes; that shows up as
     // style-changed on the indicator itself.
     this._applyMeterColors();
+    this._logoForeground = this._colorHex(
+      this._indicator?.get_theme_node()?.get_foreground_color()
+    );
     this._themeContext = St.ThemeContext.get_for_stage(global.stage);
     this._themeContext.connectObject(
       "changed",
-      () => this._refreshLogos(),
+      () => this._refreshLogos(true),
       this
     );
     this._indicator.connectObject(
@@ -236,11 +242,34 @@ export default class CodexBarExtension extends Extension {
 
   /**
    * Rebuild provider icons when the theme or the panel's foreground changes.
+   * @param {boolean} [force] Rebuild even if the panel colour is unchanged.
    */
-  _refreshLogos() {
+  _refreshLogos(force = false) {
+    const hex = this._colorHex(
+      this._indicator?.get_theme_node()?.get_foreground_color()
+    );
+    if (!force && hex === this._logoForeground) {
+      this._applyMeterColors();
+      return;
+    }
+
+    this._logoForeground = hex;
     this._logoIcons?.clear();
-    this._applyMeterColors();
     this._updateUI();
+  }
+
+  /**
+   * Convert a St colour to an SVG hex string.
+   * @param {Clutter.Color|null} color
+   * @returns {string|null}
+   */
+  _colorHex(color) {
+    if (!color) return null;
+    const channel = (value) =>
+      Math.max(0, Math.min(255, Math.round(value)))
+        .toString(16)
+        .padStart(2, "0");
+    return `#${channel(color.red)}${channel(color.green)}${channel(color.blue)}`;
   }
 
   /**
@@ -408,6 +437,7 @@ export default class CodexBarExtension extends Extension {
       this._logos = null;
     }
     this._logoIcons = null;
+    this._logoForeground = null;
 
     if (this._timeoutId) {
       GLib.source_remove(this._timeoutId);
@@ -1311,6 +1341,10 @@ export default class CodexBarExtension extends Extension {
     const creditsPercent = deriveCreditsPercent(
       normalizeDetailSections(usage.details)
     );
+    const sinceFetch = Math.max(
+      0,
+      (Date.now() - (activeData.fetchedAt || Date.now())) / 1000
+    );
 
     this._renderAccount(provider, usage);
 
@@ -1358,29 +1392,52 @@ export default class CodexBarExtension extends Extension {
           ? formatText(_("%s%% left"), formatPercent(percent))
           : formatText(_("%s%% used"), formatPercent(percent));
 
-      const resetText = (
-        tierData.resetAfterSeconds
-          ? formatReset(
-              tierData.resetAfterSeconds,
-              (Date.now() - (activeData.fetchedAt || Date.now())) / 1000,
-              _
-            )
-          : tierData.resetDescription
-      ) || "";
+      const resetText = tierData.resetAfterSeconds
+        ? formatResetIn(tierData.resetAfterSeconds, sinceFetch, _)
+        : tierData.resetDescription || "";
 
       let paceText = "";
+      let pacePercent = null;
+      let projectionText = "";
       if (
         showPacing &&
         entry.showPace &&
-        tierData.windowSeconds >= 7 * 24 * 3600
+        tierData.windowSeconds > 0 &&
+        tierData.resetAfterSeconds > 0
       ) {
         const pace = calculateUsagePace(tierData);
         if (pace) {
+          pacePercent =
+            displayMode === "remaining"
+              ? 100 - pace.expectedUsedPercent
+              : pace.expectedUsedPercent;
           const roundedReserve = Math.round(pace.reservePercent);
           paceText =
-            roundedReserve >= 0
+            roundedReserve > 0
               ? formatText(_("%d%% in reserve"), roundedReserve)
-              : formatText(_("%d%% over pace"), Math.abs(roundedReserve));
+              : roundedReserve < 0
+                ? formatText(_("%d%% over pace"), Math.abs(roundedReserve))
+                : _("On pace");
+        }
+
+        const elapsedSeconds = Math.max(
+          0,
+          tierData.windowSeconds - tierData.resetAfterSeconds
+        );
+        if (usedPercent <= 0 || elapsedSeconds <= 0) {
+          projectionText = _("Lasts until reset");
+        } else if (usedPercent >= 100) {
+          projectionText = formatText(_("Runs out in %s"), formatDuration(60));
+        } else {
+          const runOutSeconds = calculateRunOutSeconds(tierData);
+          const remainingSeconds = Math.max(
+            0,
+            tierData.resetAfterSeconds - sinceFetch
+          );
+          projectionText =
+            runOutSeconds !== null && runOutSeconds < remainingSeconds
+              ? formatText(_("Runs out in %s"), formatDuration(runOutSeconds))
+              : _("Lasts until reset");
         }
       }
 
@@ -1391,6 +1448,8 @@ export default class CodexBarExtension extends Extension {
         percentText,
         resetText,
         paceText,
+        pacePercent,
+        projectionText,
       });
     });
 
@@ -1475,10 +1534,19 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
-   * Add one usage window: title and value, a native level bar, then reset and
-   * pacing captions.
+   * Add one usage window: a bold title, a native level bar, then two columns
+   * with the quota and the reset/run-out timing.
    */
-  _addUsageRow({ title, percent, warning, percentText, resetText, paceText }) {
+  _addUsageRow({
+    title,
+    percent,
+    warning,
+    percentText,
+    resetText,
+    paceText,
+    pacePercent,
+    projectionText,
+  }) {
     const box = new St.BoxLayout({
       orientation: Clutter.Orientation.VERTICAL,
       x_expand: true,
@@ -1495,6 +1563,7 @@ export default class CodexBarExtension extends Extension {
         text: title,
         x_expand: true,
         y_align: Clutter.ActorAlign.CENTER,
+        style_class: "codexbar-usage-title",
       })
     );
     if (warning) {
@@ -1506,15 +1575,10 @@ export default class CodexBarExtension extends Extension {
         })
       );
     }
-    header.add_child(
-      new St.Label({
-        text: percentText,
-        style_class: "codexbar-value",
-        x_align: Clutter.ActorAlign.END,
-        y_align: Clutter.ActorAlign.CENTER,
-      })
-    );
     box.add_child(header);
+
+    const barBox = new St.Widget({ x_expand: true });
+    barBox.layout_manager = new Clutter.BinLayout();
 
     const bar = new BarLevel({ x_expand: true, y_align: Clutter.ActorAlign.CENTER });
     bar.add_style_class_name("codexbar-level");
@@ -1531,28 +1595,70 @@ export default class CodexBarExtension extends Extension {
     } else {
       bar.value = target;
     }
-    box.add_child(bar);
+    barBox.add_child(bar);
 
-    if (resetText || paceText) {
-      const footer = new St.BoxLayout({
-        orientation: Clutter.Orientation.HORIZONTAL,
+    // A transparent overlay draws a red tick at the pace position: where the
+    // window should be if usage were spread evenly across its duration.
+    if (pacePercent !== null && pacePercent > 0 && pacePercent < 100) {
+      const marker = new BarLevel({
         x_expand: true,
-        style_class: "codexbar-spacing-6",
+        y_align: Clutter.ActorAlign.CENTER,
       });
-      const reset = captionLabel(resetText, {
-        x_expand: true,
+      marker.add_style_class_name("codexbar-level-marker");
+      marker.maximum_value = 100;
+      marker.overdrive_start = pacePercent;
+      marker.value = 0;
+      barBox.add_child(marker);
+    }
+    box.add_child(barBox);
+
+    const footer = new St.BoxLayout({
+      orientation: Clutter.Orientation.HORIZONTAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-12",
+    });
+
+    const stats = new St.BoxLayout({
+      orientation: Clutter.Orientation.VERTICAL,
+      x_expand: true,
+      style_class: "codexbar-spacing-2",
+    });
+    stats.add_child(
+      new St.Label({
+        text: percentText,
+        style_class: "codexbar-value",
         x_align: Clutter.ActorAlign.START,
+      })
+    );
+    if (paceText) stats.add_child(captionLabel(paceText));
+    footer.add_child(stats);
+
+    if (resetText || projectionText) {
+      const timing = new St.BoxLayout({
+        orientation: Clutter.Orientation.VERTICAL,
+        style_class: "codexbar-spacing-2",
+        x_align: Clutter.ActorAlign.END,
       });
-      reset.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-      footer.add_child(reset);
-      if (paceText) {
-        footer.add_child(
-          captionLabel(paceText, { x_align: Clutter.ActorAlign.END })
-        );
+      if (resetText) {
+        const reset = new St.Label({
+          text: resetText,
+          style_class: "codexbar-caption",
+          x_align: Clutter.ActorAlign.END,
+        });
+        reset.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        timing.add_child(reset);
       }
-      box.add_child(footer);
+      if (projectionText) {
+        const projection = captionLabel(projectionText, {
+          x_align: Clutter.ActorAlign.END,
+        });
+        projection.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        timing.add_child(projection);
+      }
+      footer.add_child(timing);
     }
 
+    box.add_child(footer);
     this._addInactiveItem(box);
   }
 
@@ -1906,9 +2012,8 @@ export default class CodexBarExtension extends Extension {
   _tintedLogoIcon(sourcePath, color) {
     if (!sourcePath || !color) return null;
 
-    const channel = (value) =>
-      Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
-    const hex = `#${channel(color.red)}${channel(color.green)}${channel(color.blue)}`;
+    const hex = this._colorHex(color);
+    if (!hex) return null;
     const cacheKey = `${sourcePath}:${hex}`;
     const cached = this._logoIcons?.get(cacheKey);
     if (cached) return cached;

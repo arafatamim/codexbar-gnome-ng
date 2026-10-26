@@ -424,7 +424,7 @@ const CodexBarPrefsPage = GObject.registerClass(
 
       const showPacingInfoRow = new Adw.SwitchRow({
         title: _("Show Usage Pacing"),
-        subtitle: _("Show reserve or over-pace estimates for large windows."),
+        subtitle: _("Show reserve, pace, and run-out estimates for usage windows."),
         active: this._settings.get_boolean("show-pacing-info"),
       });
       this._settings.bind(

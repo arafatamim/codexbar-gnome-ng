@@ -1,4 +1,5 @@
 import {
+  calculateRunOutSeconds,
   calculateUsagePace,
   deriveCreditsPercent,
   extractWindowLabels,
@@ -374,6 +375,27 @@ if (!screenshotPace || Math.round(screenshotPace.reservePercent) !== 4) {
   );
 }
 console.log("✓ Weekly usage pace calculates reserve from the reset window");
+
+const screenshotRunOut = calculateRunOutSeconds({
+  usedPercent: 25,
+  windowSeconds: 1000,
+  resetAfterSeconds: 200,
+});
+if (screenshotRunOut !== 2400) {
+  throw new Error(
+    `Expected run-out at 2400s, got ${screenshotRunOut}`,
+  );
+}
+if (
+  calculateRunOutSeconds({
+    usedPercent: 0,
+    windowSeconds: 1000,
+    resetAfterSeconds: 200,
+  }) !== null
+) {
+  throw new Error("Expected no run-out projection without consumption");
+}
+console.log("✓ Usage run-out projects the remaining quota at the burn rate");
 
 // Codex + Spark: canonical windows stay in primary/secondary, Spark windows
 // fill tertiary/quaternary, and labels cover all four tiers in order.

@@ -104,6 +104,11 @@
  font-weight: bold;
 }
 
+.codexbar-usage-title {
+ font-size: 1.1em;
+ font-weight: bold;
+}
+
 .codexbar-caption {
  font-size: 0.9em;
 }
@@ -154,9 +159,17 @@
  * track follow the user's accent colour in both light and dark variants.
  */
 .codexbar-level {
- -barlevel-height: 4px;
+ -barlevel-height: 6px;
  -barlevel-background-color: st-transparentize(-st-accent-color, 0.8);
  -barlevel-active-background-color: -st-accent-color;
  -barlevel-overdrive-color: #c01c28;
  -barlevel-overdrive-separator-width: 1px;
+}
+
+.codexbar-level-marker {
+ -barlevel-height: 6px;
+ -barlevel-background-color: transparent;
+ -barlevel-active-background-color: transparent;
+ -barlevel-overdrive-separator-width: 2px;
+ color: #c01c28;
 }

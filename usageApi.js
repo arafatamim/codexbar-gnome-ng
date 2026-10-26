@@ -282,6 +282,34 @@ export const calculateUsagePace = (usageWindow) => {
     };
 };
 
+/**
+ * Seconds until the current average burn rate exhausts the window, or null
+ * when there is no consumption to project.
+ */
+export const calculateRunOutSeconds = (usageWindow) => {
+    const usedPercent = Number(usageWindow?.usedPercent);
+    const windowSeconds = Number(usageWindow?.windowSeconds);
+    const resetAfterSeconds = Number(usageWindow?.resetAfterSeconds);
+    if (
+        !Number.isFinite(usedPercent) ||
+        !Number.isFinite(windowSeconds) ||
+        !Number.isFinite(resetAfterSeconds) ||
+        usedPercent <= 0 ||
+        windowSeconds <= 0 ||
+        resetAfterSeconds <= 0
+    ) {
+        return null;
+    }
+
+    const elapsedSeconds = Math.min(
+        windowSeconds,
+        Math.max(0, windowSeconds - resetAfterSeconds)
+    );
+    if (elapsedSeconds <= 0) return null;
+
+    return (100 - usedPercent) * elapsedSeconds / usedPercent;
+};
+
 const WINDOW_TIERS = ['primary', 'secondary', 'tertiary', 'quaternary'];
 
 /** Window labels from the CLI's `rateWindowLabels`, ordered by tier. */

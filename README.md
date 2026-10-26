@@ -10,7 +10,8 @@ Fork of [InledGroup/codexbar-gnome](https://github.com/InledGroup/codexbar-gnome
 
 ## Features
 
-- Per-provider quota windows with reset countdown and pace (reserve/deficit)
+- Per-provider quota windows with reset countdown, pace (reserve/deficit), and
+  run-out projection
 - Two-bar panel meter (session, weekly), or text segments for providers shown
   in the panel
 - Provider tabs, account details, and cost totals for today and the last 30 days
