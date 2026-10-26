@@ -15,6 +15,8 @@ Fork of [InledGroup/codexbar-gnome](https://github.com/InledGroup/codexbar-gnome
 - Two-bar panel meter (session, weekly), or text segments for providers shown
   in the panel
 - Provider tabs, account details, and cost totals for today and the last 30 days
+- Per-provider usage bars under the tabs, switchable between session, weekly, and
+  monthly windows, or disabled
 - Provider logos bundled from the official CodexBar repository
 - Custom providers: anything that prints codexbar JSON works
 - English, Spanish and Brazilian Portuguese; times follow the desktop clock

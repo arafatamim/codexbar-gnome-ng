@@ -6,6 +6,7 @@ import {
   parseTextWindowLabels,
   formatResetDescription,
   normalizeDetailSections,
+  resolveWindowTier,
   UsageApiClient,
 } from "./usageApi.js";
 import {
@@ -396,6 +397,56 @@ if (
   throw new Error("Expected no run-out projection without consumption");
 }
 console.log("✓ Usage run-out projects the remaining quota at the burn rate");
+
+const tabWindows = {
+  labels: ["Session", "Weekly", "Monthly"],
+  data: {
+    usage: {
+      primary: { usedPercent: 40 },
+      secondary: { usedPercent: 20 },
+      tertiary: { usedPercent: 10 },
+    },
+  },
+};
+[
+  ["session", "primary"],
+  ["weekly", "secondary"],
+  ["monthly", "tertiary"],
+].forEach(([windowName, tier]) => {
+  const actual = resolveWindowTier(tabWindows, windowName);
+  if (actual !== tier) {
+    throw new Error(
+      `Expected ${windowName} tab bar on ${tier}, got ${actual}`,
+    );
+  }
+});
+const reorderedWindows = {
+  labels: ["Weekly", "Session"],
+  data: {
+    usage: {
+      primary: { usedPercent: 20 },
+      secondary: { usedPercent: 40 },
+    },
+  },
+};
+if (resolveWindowTier(reorderedWindows, "session") !== "secondary") {
+  throw new Error("Expected session tab bar to follow the provider's label");
+}
+if (resolveWindowTier(reorderedWindows, "weekly") !== "primary") {
+  throw new Error("Expected weekly tab bar to follow the provider's label");
+}
+if (
+  resolveWindowTier(
+    { data: { usage: { primary: { usedPercent: 10 } } } },
+    "monthly",
+  ) !== null
+) {
+  throw new Error("Expected no tab bar when the selected window is missing");
+}
+if (resolveWindowTier(tabWindows, "disabled") !== null) {
+  throw new Error("Expected the disabled option to hide the tab bar");
+}
+console.log("✓ Tab bars resolve session, weekly and monthly windows");
 
 // Codex + Spark: canonical windows stay in primary/secondary, Spark windows
 // fill tertiary/quaternary, and labels cover all four tiers in order.

@@ -5,6 +5,13 @@
     <value nick="remaining" value="1"/>
   </enum>
 
+  <enum id="org.gnome.shell.extensions.codexbar.TabWindow">
+    <value nick="session" value="0"/>
+    <value nick="weekly" value="1"/>
+    <value nick="monthly" value="2"/>
+    <value nick="disabled" value="3"/>
+  </enum>
+
   <schema id="org.gnome.shell.extensions.codexbar" path="/org/gnome/shell/extensions/codexbar/">
     <key name="refresh-interval" type="i">
       <default>15</default>
@@ -21,6 +28,10 @@
     <key name="display-mode" enum="org.gnome.shell.extensions.codexbar.DisplayMode">
       <default>'remaining'</default>
       <summary>Whether to show used or remaining quota</summary>
+    </key>
+    <key name="tab-window" enum="org.gnome.shell.extensions.codexbar.TabWindow">
+      <default>'session'</default>
+      <summary>Usage window shown under provider tabs</summary>
     </key>
     <key name="first-run" type="b">
       <default>true</default>

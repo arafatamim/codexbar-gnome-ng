@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: CodexBar\n"
 "Report-Msgid-Bugs-To: https://github.com/InledGroup/codexbar-gnome/issues\n"
-"POT-Creation-Date: 2026-10-26 07:37+0600\n"
+"POT-Creation-Date: 2026-10-26 07:54+0600\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,233 +17,234 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: extension.js:159 extension.js:370 extension.js:945
+#: extension.js:161 extension.js:376 extension.js:951
 msgid "CodexBar"
 msgstr ""
 
-#: extension.js:378
+#: extension.js:384
 msgid "Refresh Now"
 msgstr ""
 
-#: extension.js:383
+#: extension.js:389
 msgid "Preferences"
 msgstr ""
 
-#: extension.js:613
+#: extension.js:619
 msgid "No token found in keyring"
 msgstr ""
 
-#: extension.js:630 extension.js:717
+#: extension.js:636 extension.js:723
 msgid "Unknown CLI error"
 msgstr ""
 
-#: extension.js:654 extension.js:941 localize.js:102 localize.js:177
+#: extension.js:660 extension.js:947 prefs.js:398 localize.js:102
+#: localize.js:177
 msgid "Weekly"
 msgstr ""
 
-#: extension.js:655 localize.js:175
+#: extension.js:661 localize.js:175
 #, javascript-format
 msgid "%d-Day"
 msgstr ""
 
-#: extension.js:658 localize.js:174
+#: extension.js:664 localize.js:174
 #, javascript-format
 msgid "%d-Hour"
 msgstr ""
 
-#: extension.js:661 localize.js:176
+#: extension.js:667 localize.js:176
 msgid "Usage"
 msgstr ""
 
-#: extension.js:679
+#: extension.js:685
 msgid "Unknown API error"
 msgstr ""
 
-#: extension.js:687
+#: extension.js:693
 msgid "No command configured"
 msgstr ""
 
-#: extension.js:797
+#: extension.js:803
 msgid "Cost"
 msgstr ""
 
-#: extension.js:801
+#: extension.js:807
 msgid "Today"
 msgstr ""
 
-#: extension.js:802
+#: extension.js:808
 msgid "Last 30 days"
 msgstr ""
 
-#: extension.js:815
+#: extension.js:821
 #, javascript-format
 msgid "%s · %s tokens"
 msgstr ""
 
-#: extension.js:938 localize.js:101
+#: extension.js:944 prefs.js:398 localize.js:101
 msgid "Session"
 msgstr ""
 
-#: extension.js:946
+#: extension.js:952
 msgid "CodexBar usage"
 msgstr ""
 
-#: extension.js:1150
+#: extension.js:1156
 msgid "Loading usage…"
 msgstr ""
 
-#: extension.js:1164
+#: extension.js:1170
 msgid "Invalid JSON format (missing usage)"
 msgstr ""
 
-#: extension.js:1364
+#: extension.js:1407
 msgid "Credits"
 msgstr ""
 
-#: extension.js:1367 extension.js:1646
+#: extension.js:1410 extension.js:1713
 msgid "Balance"
 msgstr ""
 
-#: extension.js:1375
+#: extension.js:1418
 msgid "Code review"
 msgstr ""
 
-#: extension.js:1388
+#: extension.js:1431
 #, javascript-format
 msgid "%s%% left"
 msgstr ""
 
-#: extension.js:1389
+#: extension.js:1432
 #, javascript-format
 msgid "%s%% used"
 msgstr ""
 
-#: extension.js:1408
+#: extension.js:1456
 #, javascript-format
 msgid "%d%% in reserve"
 msgstr ""
 
-#: extension.js:1410
+#: extension.js:1458
 #, javascript-format
 msgid "%d%% over pace"
 msgstr ""
 
-#: extension.js:1411
+#: extension.js:1459
 msgid "On pace"
 msgstr ""
 
-#: extension.js:1419 extension.js:1432
+#: extension.js:1467 extension.js:1479
 msgid "Lasts until reset"
 msgstr ""
 
-#: extension.js:1421 extension.js:1431
+#: extension.js:1469 extension.js:1478
 #, javascript-format
 msgid "Runs out in %s"
 msgstr ""
 
-#: extension.js:1456
+#: extension.js:1504
 msgid "Limit reset credits"
 msgstr ""
 
-#: extension.js:1463
+#: extension.js:1511
 msgid "1 available"
 msgstr ""
 
-#: extension.js:1464
+#: extension.js:1512
 #, javascript-format
 msgid "%d available"
 msgstr ""
 
-#: extension.js:1516
+#: extension.js:1564
 #, javascript-format
 msgid "Updated %s"
 msgstr ""
 
-#: extension.js:1688
+#: extension.js:1755
 msgid "Details"
 msgstr ""
 
-#: extension.js:1767
+#: extension.js:1834
 msgid "Couldn't load usage"
 msgstr ""
 
-#: extension.js:1773
+#: extension.js:1840
 msgid "Check the provider command in Preferences."
 msgstr ""
 
-#: extension.js:1791
+#: extension.js:1858
 msgid "Welcome to CodexBar"
 msgstr ""
 
-#: extension.js:1796
+#: extension.js:1863
 msgid "Track your AI provider usage from the top bar."
 msgstr ""
 
-#: extension.js:1803
+#: extension.js:1870
 msgid "CodexBar CLI"
 msgstr ""
 
-#: extension.js:1804
+#: extension.js:1871
 msgid "Required to query AI usage metrics."
 msgstr ""
 
-#: extension.js:1811
+#: extension.js:1878
 msgid "Cookie Importer"
 msgstr ""
 
-#: extension.js:1813
+#: extension.js:1880
 msgid ""
 "Automatically extracts the Codex (ChatGPT) session cookie from your browser."
 msgstr ""
 
-#: extension.js:1822
+#: extension.js:1889
 msgid "Antigravity Helper"
 msgstr ""
 
-#: extension.js:1824
+#: extension.js:1891
 msgid ""
 "Trusts the local Antigravity server certificate. Requires administrator "
 "privileges."
 msgstr ""
 
-#: extension.js:1832
+#: extension.js:1899
 msgid "Get Started"
 msgstr ""
 
-#: extension.js:1859
+#: extension.js:1926
 #, javascript-format
 msgid "Language: %s"
 msgstr ""
 
-#: extension.js:1918
+#: extension.js:1985
 msgid "Installed"
 msgstr ""
 
-#: extension.js:1918
+#: extension.js:1985
 msgid "Optional"
 msgstr ""
 
-#: extension.js:1918
+#: extension.js:1985
 msgid "Missing"
 msgstr ""
 
-#: extension.js:1942
+#: extension.js:2009
 msgid "No providers configured"
 msgstr ""
 
-#: extension.js:1947
+#: extension.js:2014
 msgid "Add a provider in Preferences to start tracking usage."
 msgstr ""
 
-#: extension.js:1952
+#: extension.js:2019
 msgid "Open Preferences"
 msgstr ""
 
-#: extension.js:2108 extension.js:2121
+#: extension.js:2175 extension.js:2188
 msgid "Copy"
 msgstr ""
 
-#: extension.js:2116
+#: extension.js:2183
 msgid "Copied"
 msgstr ""
 
@@ -384,211 +385,219 @@ msgid "Remaining"
 msgstr ""
 
 #: prefs.js:395
-msgid "Language"
+msgid "Tab Usage Bar"
 msgstr ""
 
-#: prefs.js:413
-msgid "Show Provider Logos"
+#: prefs.js:396
+msgid "Window shown under each provider name."
+msgstr ""
+
+#: prefs.js:398 localize.js:103
+msgid "Monthly"
 msgstr ""
 
 #: prefs.js:414
+msgid "Language"
+msgstr ""
+
+#: prefs.js:432
+msgid "Show Provider Logos"
+msgstr ""
+
+#: prefs.js:433
 msgid "Display provider logos in the top bar."
 msgstr ""
 
-#: prefs.js:426
+#: prefs.js:445
 msgid "Show Usage Pacing"
 msgstr ""
 
-#: prefs.js:427
+#: prefs.js:446
 msgid "Show reserve, pace, and run-out estimates for usage windows."
 msgstr ""
 
-#: prefs.js:439
+#: prefs.js:458
 msgid "Show Provider Details"
 msgstr ""
 
-#: prefs.js:441
+#: prefs.js:460
 msgid "Show extra detail sections reported by the provider CLI."
 msgstr ""
 
-#: prefs.js:461
+#: prefs.js:480
 msgid "AI Providers"
 msgstr ""
 
-#: prefs.js:463
+#: prefs.js:482
 msgid ""
 "Enable providers and choose how each one connects. Direct API uses a session "
 "cookie from your keyring; the other options run codexbar-cli."
 msgstr ""
 
-#: prefs.js:544 prefs.js:585
+#: prefs.js:563 prefs.js:604
 msgid "Enabled"
 msgstr ""
 
-#: prefs.js:544 prefs.js:585
+#: prefs.js:563 prefs.js:604
 msgid "Disabled"
 msgstr ""
 
-#: prefs.js:595
+#: prefs.js:614
 msgid "Show in Panel"
 msgstr ""
 
-#: prefs.js:596
+#: prefs.js:615
 msgid "Show this provider's usage in the top bar."
 msgstr ""
 
-#: prefs.js:623
+#: prefs.js:642
 msgid "Connection"
 msgstr ""
 
-#: prefs.js:638
+#: prefs.js:657
 msgid "Session Cookie"
 msgstr ""
 
-#: prefs.js:653
+#: prefs.js:672
 msgid "Import from Browser"
 msgstr ""
 
-#: prefs.js:654
+#: prefs.js:673
 msgid "Extract the session cookie automatically."
 msgstr ""
 
-#: prefs.js:662
+#: prefs.js:681
 msgid "Import"
 msgstr ""
 
-#: prefs.js:682 prefs.js:839
+#: prefs.js:701 prefs.js:858
 msgid "CLI Command"
 msgstr ""
 
-#: prefs.js:690
+#: prefs.js:709
 msgid "Reset"
 msgstr ""
 
-#: prefs.js:694
+#: prefs.js:713
 msgid "Reset to the default command"
 msgstr ""
 
-#: prefs.js:717
+#: prefs.js:736
 msgid "Missing Dependency: lsof"
 msgstr ""
 
-#: prefs.js:718
+#: prefs.js:737
 #, javascript-format
 msgid "Install it with: %s"
 msgstr ""
 
-#: prefs.js:734
+#: prefs.js:753
 msgid "Antigravity Certificate"
 msgstr ""
 
-#: prefs.js:736
+#: prefs.js:755
 msgid ""
 "Antigravity needs a trusted local certificate. Install the helper from the "
 "README, then run codexbar-ssl-helper."
 msgstr ""
 
-#: prefs.js:749
+#: prefs.js:768
 msgid "Remove Provider"
 msgstr ""
 
-#: prefs.js:750 prefs.js:760
+#: prefs.js:769 prefs.js:779
 msgid "This provider will be removed from the list."
 msgstr ""
 
-#: prefs.js:753 prefs.js:763
+#: prefs.js:772 prefs.js:782
 msgid "Remove"
 msgstr ""
 
-#: prefs.js:759
+#: prefs.js:778
 #, javascript-format
 msgid "Remove %s?"
 msgstr ""
 
-#: prefs.js:762 prefs.js:844
+#: prefs.js:781 prefs.js:863
 msgid "Cancel"
 msgstr ""
 
-#: prefs.js:824
+#: prefs.js:843
 msgid "Add Custom Provider"
 msgstr ""
 
-#: prefs.js:830
+#: prefs.js:849
 msgid "New Provider"
 msgstr ""
 
-#: prefs.js:831
+#: prefs.js:850
 msgid "Enter a name and the CLI command that returns usage JSON."
 msgstr ""
 
-#: prefs.js:838
+#: prefs.js:857
 msgid "Provider Name"
 msgstr ""
 
-#: prefs.js:845
+#: prefs.js:864
 msgid "Add"
 msgstr ""
 
-#: prefs.js:906
+#: prefs.js:925
 msgid "Maintenance"
 msgstr ""
 
-#: prefs.js:910
+#: prefs.js:929
 msgid "Show Welcome Screen"
 msgstr ""
 
-#: prefs.js:911
+#: prefs.js:930
 msgid "Reset the first-run state and show setup in the menu."
 msgstr ""
 
-#: prefs.js:914
+#: prefs.js:933
 msgid "Show"
 msgstr ""
 
-#: prefs.js:944
+#: prefs.js:963
 msgid "Cookie Importer Missing"
 msgstr ""
 
-#: prefs.js:945
+#: prefs.js:964
 msgid "Install the helper by running:"
 msgstr ""
 
-#: prefs.js:991
+#: prefs.js:1010
 msgid "Timeout"
 msgstr ""
 
-#: prefs.js:993
+#: prefs.js:1012
 msgid ""
 "The cookie importer is taking too long. Please ensure your browser is closed "
 "and try again."
 msgstr ""
 
-#: prefs.js:1025
+#: prefs.js:1044
 msgid "Import Failed"
 msgstr ""
 
-#: prefs.js:1034
+#: prefs.js:1053
 msgid "Cookies imported successfully"
 msgstr ""
 
-#: prefs.js:1041
+#: prefs.js:1060
 msgid "The importer returned no data."
 msgstr ""
 
-#: prefs.js:1045
+#: prefs.js:1064
 msgid "Error"
 msgstr ""
 
-#: prefs.js:1054
+#: prefs.js:1073
 msgid "Unexpected Error"
 msgstr ""
 
 #: localize.js:100
 msgid "Cloud credits"
-msgstr ""
-
-#: localize.js:103
-msgid "Monthly"
 msgstr ""
 
 #: localize.js:133

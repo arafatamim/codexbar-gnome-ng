@@ -55,6 +55,21 @@
  -st-icon-style: symbolic;
 }
 
+.codexbar-tab-content {
+ spacing: 3px;
+}
+
+.codexbar-tab-meter {
+ -barlevel-height: 3px;
+ -barlevel-background-color: st-transparentize(-st-accent-color, 0.75);
+ -barlevel-active-background-color: -st-accent-color;
+}
+
+.codexbar-tab-meter-active {
+ -barlevel-background-color: st-transparentize(-st-accent-fg-color, 0.7);
+ -barlevel-active-background-color: -st-accent-fg-color;
+}
+
 /* Footer: title, caption and circular buttons */
 
 .codexbar-footer {

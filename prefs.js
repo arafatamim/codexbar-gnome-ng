@@ -391,6 +391,27 @@ const CodexBarPrefsPage = GObject.registerClass(
       });
       group.add(displayModeRow);
 
+      const tabWindowRow = new Adw.ComboRow({
+        title: _("Tab Usage Bar"),
+        subtitle: _("Window shown under each provider name."),
+        model: new Gtk.StringList({
+          strings: [_("Session"), _("Weekly"), _("Monthly"), _("Disabled")],
+        }),
+        selected:
+          { session: 0, weekly: 1, monthly: 2, disabled: 3 }[
+            this._settings.get_string("tab-window")
+          ] ?? 0,
+      });
+      tabWindowRow.connect("notify::selected", () => {
+        this._settings.set_string(
+          "tab-window",
+          ["session", "weekly", "monthly", "disabled"][
+            tabWindowRow.selected
+          ] ?? "session"
+        );
+      });
+      group.add(tabWindowRow);
+
       const languageRow = new Adw.ComboRow({
         title: _("Language"),
         // Language names stay in their own language, so no gettext here.

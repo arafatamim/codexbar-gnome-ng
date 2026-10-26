@@ -312,6 +312,46 @@ export const calculateRunOutSeconds = (usageWindow) => {
 
 const WINDOW_TIERS = ['primary', 'secondary', 'tertiary', 'quaternary'];
 
+const TAB_WINDOW_MATCHERS = {
+    session: /session|5.?hour/i,
+    weekly: /week|7.?day/i,
+    monthly: /month|30.?day/i,
+};
+
+const TAB_WINDOW_FALLBACKS = {
+    session: 'primary',
+    weekly: 'secondary',
+    monthly: 'tertiary',
+};
+
+/**
+ * Pick the usage tier for the configured tab window. A provider's own label
+ * wins so reordered windows still work; otherwise use the conventional tier.
+ * @param {{labels?: string[], data?: {usage?: object}}|undefined} entry
+ * @param {string} windowName "session", "weekly", "monthly" or "disabled"
+ * @returns {string|null}
+ */
+export const resolveWindowTier = (entry, windowName) => {
+    const labels = entry?.labels || [];
+    const matcher = TAB_WINDOW_MATCHERS[windowName];
+    if (matcher) {
+        const index = labels.findIndex(
+            label => typeof label === 'string' && matcher.test(label)
+        );
+        if (index >= 0) {
+            const tier = WINDOW_TIERS[index];
+            if (entry?.data?.usage?.[tier]?.usedPercent !== undefined)
+                return tier;
+        }
+    }
+
+    const fallback = TAB_WINDOW_FALLBACKS[windowName];
+    if (!fallback) return null;
+    return entry?.data?.usage?.[fallback]?.usedPercent !== undefined
+        ? fallback
+        : null;
+};
+
 /** Window labels from the CLI's `rateWindowLabels`, ordered by tier. */
 export function extractWindowLabels(payload) {
     const byTier = payload?.rateWindowLabels;

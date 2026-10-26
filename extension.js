@@ -16,6 +16,7 @@ import {
   calculateUsagePace,
   deriveCreditsPercent,
   normalizeDetailSections,
+  resolveWindowTier,
   UsageApiClient,
 } from "./usageApi.js";
 import { loadToken, nullTokenSchema } from "./secret.js";
@@ -188,6 +189,7 @@ export default class CodexBarExtension extends Extension {
       "changed::providers", () => this._onSettingsChanged(),
       "changed::refresh-interval", () => this._onSettingsChanged(),
       "changed::display-mode", () => this._updateUI(),
+      "changed::tab-window", () => this._updateUI(),
       "changed::show-logos", () => this._updateUI(),
       "changed::show-pacing-info", () => this._updateUI(),
       "changed::show-provider-details", () => this._updateUI(),
@@ -1202,6 +1204,17 @@ export default class CodexBarExtension extends Extension {
     if (!show) return;
 
     const showLogos = this._settings.get_boolean("show-logos");
+    const displayMode = this._settings.get_string("display-mode");
+    const tabWindow = this._settings.get_string("tab-window");
+    const showMeters = tabWindow !== "disabled";
+    const tabValues = showMeters
+      ? this._providers.map((provider, index) => {
+          const entry = this._providersData[index];
+          const tier = resolveWindowTier(entry, tabWindow);
+          return tier ? this._windowPercent(entry, tier, displayMode) : null;
+        })
+      : [];
+
     const tabs = this._providers.map((provider, index) => {
       const button = new St.Button({
         style_class: "codexbar-tab",
@@ -1212,6 +1225,10 @@ export default class CodexBarExtension extends Extension {
         button.add_style_class_name("codexbar-tab-active");
       }
 
+      const content = new St.BoxLayout({
+        orientation: Clutter.Orientation.VERTICAL,
+        style_class: "codexbar-tab-content",
+      });
       const row = new St.BoxLayout({
         orientation: Clutter.Orientation.HORIZONTAL,
         y_align: Clutter.ActorAlign.CENTER,
@@ -1225,7 +1242,27 @@ export default class CodexBarExtension extends Extension {
       // instead of being cut mid-glyph.
       label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
       row.add_child(label);
-      button.set_child(row);
+      content.add_child(row);
+
+      if (showMeters) {
+        const value = tabValues[index];
+        if (value !== null) {
+          const meter = new BarLevel({ x_expand: true });
+          meter.add_style_class_name("codexbar-tab-meter");
+          if (index === this._activeProviderIndex) {
+            meter.add_style_class_name("codexbar-tab-meter-active");
+          }
+          meter.maximum_value = 100;
+          meter.overdrive_start = 100;
+          meter.value = Math.max(0, Math.min(100, value));
+          content.add_child(meter);
+        } else {
+          // Keep every tab the same height when one provider lacks the window.
+          content.add_child(new St.Widget({ height: 3 }));
+        }
+      }
+
+      button.set_child(content);
       button.connect("clicked", () => {
         if (index === this._activeProviderIndex) return;
         this._activeProviderIndex = index;
@@ -1276,7 +1313,11 @@ export default class CodexBarExtension extends Extension {
       if (available > 0) {
         labelWidths.set(
           tab,
-          tab.get_child().get_last_child().get_preferred_width(-1)[1]
+          tab
+            .get_child()
+            .get_first_child()
+            .get_last_child()
+            .get_preferred_width(-1)[1]
         );
       }
       this._tabsBox.remove_child(tab);
@@ -1321,7 +1362,7 @@ export default class CodexBarExtension extends Extension {
       // so St ends it with an ellipsis instead of cutting it at the menu edge.
       const tab = tabsRow[0];
       if (available > 0 && tabsRow.length === 1 && widths.get(tab) > available) {
-        const label = tab.get_child().get_last_child();
+        const label = tab.get_child().get_first_child().get_last_child();
         label.set_width(
           Math.max(1, available - (widths.get(tab) - labelWidths.get(tab)))
         );
