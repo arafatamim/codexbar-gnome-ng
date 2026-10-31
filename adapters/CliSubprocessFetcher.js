@@ -5,6 +5,13 @@ import { UsageFetcher } from '../core/ports/UsageFetcher.js';
 import { UsageApiError, extractWindowLabels, parseTextWindowLabels } from '../usageApi.js';
 
 /**
+ * Hard cap for a CLI run. `codexbar` does its own network I/O and may stall;
+ * past this the subprocess is killed so the refresh loop can continue.
+ */
+const SUBPROCESS_TIMEOUT_SECONDS = 60;
+
+
+/**
  * ADAPTER (Hexagonal Architecture)
  * Implementation of the UsageFetcher port to run the external 'codexbar' CLI
  * binary as a subprocess. It resolves the executable path dynamically, invokes
@@ -128,6 +135,13 @@ export class CliSubprocessFetcher extends UsageFetcher {
             throw new UsageApiError(`Could not run ${argv[0]}: ${e.message}`);
         }
 
+        // The CLI does its own network I/O, so it may stall well past the
+        // extension's expectation; without this watchdog a hung subprocess
+        // would wedge `_loading` (and therefore every refresh) until the
+        // shell restarts. force_exit() closes the pipes, which lets
+        // communicate_utf8_async settle and the caller report an error.
+        const killWatchdog = this._spawnKillWatchdog(proc);
+
         const [stdout, stderr] = await new Promise((resolve, reject) => {
             proc.communicate_utf8_async(null, cancellable, (p, res) => {
                 try {
@@ -142,6 +156,7 @@ export class CliSubprocessFetcher extends UsageFetcher {
                 }
             });
         });
+        this._clearWatchdog(killWatchdog);
 
         const trimmedStdout = stdout.trim();
         const trimmedStderr = stderr.trim();
@@ -176,6 +191,42 @@ export class CliSubprocessFetcher extends UsageFetcher {
     }
 
     /**
+     * Start a watchdog that kills the subprocess if it has not exited within
+     * SUBPROCESS_TIMEOUT_SECONDS. The CLI does its own network I/O, so it may
+     * stall; without this a hung subprocess would wedge the refresh loop
+     * until the shell restarts.
+     * @param {Gio.Subprocess} proc
+     * @returns {{id: number, fired: boolean}} Watchdog state for _clearWatchdog().
+     */
+    _spawnKillWatchdog(proc) {
+        const watchdog = { id: 0, fired: false };
+        watchdog.id = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            SUBPROCESS_TIMEOUT_SECONDS,
+            () => {
+                watchdog.fired = true;
+                console.warn(
+                    `CodexBar: killed hung subprocess after ${SUBPROCESS_TIMEOUT_SECONDS}s`
+                );
+                proc.force_exit();
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+        return watchdog;
+    }
+
+    /**
+     * Clear a watchdog created by _spawnKillWatchdog once the read settled.
+     * A watchdog that already fired has removed itself.
+     * @param {{id: number, fired: boolean}|null} watchdog
+     */
+    _clearWatchdog(watchdog) {
+        if (!watchdog || !watchdog.id || watchdog.fired) return;
+        GLib.source_remove(watchdog.id);
+        watchdog.id = 0;
+    }
+
+    /**
      * Fallback for CLI versions whose JSON has no rateWindowLabels: run the
      * text output once more and read the "Label: NN%" lines.
      */
@@ -194,6 +245,7 @@ export class CliSubprocessFetcher extends UsageFetcher {
             });
             launcher.set_environ(env);
             const proc = launcher.spawnv(discoveryArgv);
+            const killWatchdog = this._spawnKillWatchdog(proc);
 
             const [stdout] = await new Promise((resolve) => {
                 proc.communicate_utf8_async(null, cancellable, (p, res) => {
@@ -205,6 +257,7 @@ export class CliSubprocessFetcher extends UsageFetcher {
                     }
                 });
             });
+            this._clearWatchdog(killWatchdog);
 
             return parseTextWindowLabels(stdout);
         } catch (e) {

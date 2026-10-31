@@ -55,6 +55,16 @@ function logDev(msg) {
 const SECONDARY_TEXT_OPACITY = 178;
 
 /**
+ * Hard deadline for one provider's data fetch (keyring lookup, CLI run or API
+ * requests). Each is awaited sequentially inside _refreshData, so a single
+ * fetch that never settles would leave _loading stuck true and the refresh
+ * mechanism permanently wedged; the deadline guarantees every await settles.
+ * Must exceed the Soup session timeout (30s per request) and the CLI's own
+ * watchdog in CliSubprocessFetcher.
+ */
+const REFRESH_FETCH_DEADLINE_SECONDS = 90;
+
+/**
  * Money in the session locale, falling back to a plain dollar string when the
  * currency code isn't supported by Intl.
  * @param {number} value
@@ -576,6 +586,50 @@ export default class CodexBarExtension extends Extension {
   }
 
   /**
+   * Run a single fetch under a hard deadline. Returns the fetch's outcome,
+   * or rejects with a timeout error if it has not settled within
+   * REFRESH_FETCH_DEADLINE_SECONDS. The fetch receives a child cancellable
+   * that fires on the deadline and when the extension's own cancellable is
+   * cancelled, so deadline-aware operations (Soup, subprocess reads) abort
+   * early instead of running on.
+   * @param {string} label Debug label for the fetch.
+   * @param {(child: Gio.Cancellable) => Promise} run Kick off the fetch.
+   */
+  _fetchWithDeadline(label, run) {
+    const parent = this._cancellable;
+    const child = new Gio.Cancellable();
+    const tieId = parent ? parent.connect(() => child.cancel()) : 0;
+    let deadlineId = null;
+    let timedOutResolve = null;
+    const deadlinePromise = new Promise((_, reject) => {
+      timedOutResolve = (error) => reject(error);
+    });
+    deadlinePromise.catch(() => {}); // the loser branch must never warn
+
+    deadlineId = GLib.timeout_add_seconds(
+      GLib.PRIORITY_DEFAULT,
+      REFRESH_FETCH_DEADLINE_SECONDS,
+      () => {
+        // The source removes itself on return; forget the id so the finally
+        // below does not try to remove it a second time.
+        deadlineId = null;
+        logDev(`Fetch deadline hit: ${label}`);
+        child.cancel();
+        timedOutResolve(new Error(_("Fetch timed out")));
+        return GLib.SOURCE_REMOVE;
+      }
+    );
+
+    return Promise.race([run(child), deadlinePromise]).finally(() => {
+      if (deadlineId) {
+        GLib.source_remove(deadlineId);
+        deadlineId = null;
+      }
+      if (tieId && parent) parent.disconnect(tieId);
+    });
+  }
+
+  /**
    * Refresh usage data for all enabled providers.
    */
   async _refreshData() {
@@ -587,159 +641,169 @@ export default class CodexBarExtension extends Extension {
     this._loading = true;
     this._updateRefreshButton();
 
-    logDev("Refreshing usage data...");
+    try {
+      logDev("Refreshing usage data...");
 
-    if (this._settings.get_boolean("dev-custom-output-enabled")) {
-      this._loadMockData();
-      return;
-    }
+      if (this._settings.get_boolean("dev-custom-output-enabled")) {
+        this._loadMockData();
+        return;
+      }
 
-    this._providersData = [];
+      this._providersData = [];
 
-    for (let i = 0; i < this._providers.length; i++) {
-      const provider = this._providers[i];
+      for (let i = 0; i < this._providers.length; i++) {
+        const provider = this._providers[i];
 
-      if (provider.useApi) {
-        logDev(`Fetching API summary for provider: ${provider.name}`);
-        try {
-          let data;
-          const token = await loadToken(provider.id);
-          if (!token) {
-            // The CLI reads the provider's own credentials from disk, so it
-            // still works when nothing is stored in the keyring.
-            logDev(
-              `No keyring token for ${provider.name}; falling back to the CLI`
+        if (provider.useApi) {
+          logDev(`Fetching API summary for provider: ${provider.name}`);
+          try {
+            let data;
+            const token = await this._fetchWithDeadline(
+              `token (${provider.name})`,
+              () => loadToken(provider.id)
             );
-            const cliCommand =
-              provider.command ||
-              (provider.id
-                ? `codexbar --provider ${provider.id} --format json`
-                : "");
-            if (!cliCommand) {
-              this._providersData[i] = { error: _("No token found in keyring") };
+            if (!token) {
+              // The CLI reads the provider's own credentials from disk, so it
+              // still works when nothing is stored in the keyring.
+              logDev(
+                `No keyring token for ${provider.name}; falling back to the CLI`
+              );
+              const cliCommand =
+                provider.command ||
+                (provider.id
+                  ? `codexbar --provider ${provider.id} --format json`
+                  : "");
+              if (!cliCommand) {
+                this._providersData[i] = { error: _("No token found in keyring") };
+                continue;
+              }
+              try {
+                this._providersData[i] = this._normalizeCliData(
+                  await this._fetchWithDeadline(
+                    `CLI (${provider.name})`,
+                    (child) => this._apiClient.fetchCliSummary(cliCommand, child)
+                  ),
+                  provider
+                );
+              } catch (error) {
+                console.error(
+                  error,
+                  `CodexBar: error running provider ${provider.name}`
+                );
+                this._providersData[i] = {
+                  error: error.message || _("Unknown CLI error"),
+                };
+              }
               continue;
             }
-            try {
-              this._providersData[i] = this._normalizeCliData(
-                await this._apiClient.fetchCliSummary(
-                  cliCommand,
-                  this._cancellable
-                ),
-                provider
-              );
-            } catch (error) {
-              console.error(
-                error,
-                `CodexBar: error running provider ${provider.name}`
-              );
-              this._providersData[i] = {
-                error: error.message || _("Unknown CLI error"),
-              };
-            }
-            continue;
-          }
-          data = await this._apiClient.fetchSummary(
-            token,
-            provider.id,
-            this._cancellable
-          );
-
-          let apiLabels = [];
-          if (data.labels && data.labels.length > 0) {
-            apiLabels = data.labels;
-          } else {
-            ["primary", "secondary", "tertiary", "quaternary"].forEach(
-              (tier) => {
-                const win = data.usage[tier];
-                if (win && win.windowSeconds) {
-                  const hours = Math.round(win.windowSeconds / 3600);
-                  if (hours >= 24) {
-                    const days = Math.round(hours / 24);
-                    apiLabels.push(
-                      days === 7
-                        ? _("Weekly")
-                        : formatText(_("%d-Day"), days)
-                    );
-                  } else {
-                    apiLabels.push(formatText(_("%d-Hour"), hours));
-                  }
-                } else if (win) {
-                  apiLabels.push(_("Usage"));
-                }
-              }
+            data = await this._fetchWithDeadline(
+              `API (${provider.name})`,
+              (child) => this._apiClient.fetchSummary(token, provider.id, child)
             );
+
+            let apiLabels = [];
+            if (data.labels && data.labels.length > 0) {
+              apiLabels = data.labels;
+            } else {
+              ["primary", "secondary", "tertiary", "quaternary"].forEach(
+                (tier) => {
+                  const win = data.usage[tier];
+                  if (win && win.windowSeconds) {
+                    const hours = Math.round(win.windowSeconds / 3600);
+                    if (hours >= 24) {
+                      const days = Math.round(hours / 24);
+                      apiLabels.push(
+                        days === 7
+                          ? _("Weekly")
+                          : formatText(_("%d-Day"), days)
+                      );
+                    } else {
+                      apiLabels.push(formatText(_("%d-Hour"), hours));
+                    }
+                  } else if (win) {
+                    apiLabels.push(_("Usage"));
+                  }
+                }
+              );
+            }
+
+            this._providersData[i] = {
+              data,
+              labels: apiLabels,
+            };
+            logDev(`Successfully fetched API data for provider: ${provider.name}`);
+          } catch (error) {
+            logDev(
+              `API error for provider ${provider.name}: ${error.message || error}`
+            );
+            console.error(error, `CodexBar: API error for ${provider.name}`);
+            let msg = error.message;
+            if (!msg && error.toString) msg = error.toString();
+            if (!msg || msg === "[object Object]") msg = _("Unknown API error");
+            this._providersData[i] = { error: msg };
+          }
+          continue;
+        }
+
+        if (!provider.command) {
+          logDev(`Error: No CLI command configured for provider: ${provider.name}`);
+          this._providersData[i] = { error: _("No command configured") };
+          continue;
+        }
+
+        logDev(
+          `Executing CLI command for provider ${provider.name}: ${provider.command}`
+        );
+        try {
+          const result = await this._fetchWithDeadline(
+            `CLI (${provider.name})`,
+            (child) => this._apiClient.fetchCliSummary(provider.command, child)
+          );
+          if (!this._cancellable || this._cancellable.is_cancelled()) {
+            logDev(`CLI execution cancelled for provider: ${provider.name}`);
+            return;
           }
 
-          this._providersData[i] = {
-            data,
-            labels: apiLabels,
-          };
-          logDev(`Successfully fetched API data for provider: ${provider.name}`);
+          this._providersData[i] = this._normalizeCliData(result, provider);
+          logDev(`Successfully executed CLI command for provider: ${provider.name}`);
         } catch (error) {
-          logDev(
-            `API error for provider ${provider.name}: ${error.message || error}`
-          );
-          console.error(error, `CodexBar: API error for ${provider.name}`);
-          let msg = error.message;
-          if (!msg && error.toString) msg = error.toString();
-          if (!msg || msg === "[object Object]") msg = _("Unknown API error");
-          this._providersData[i] = { error: msg };
-        }
-        continue;
-      }
-
-      if (!provider.command) {
-        logDev(`Error: No CLI command configured for provider: ${provider.name}`);
-        this._providersData[i] = { error: _("No command configured") };
-        continue;
-      }
-
-      logDev(
-        `Executing CLI command for provider ${provider.name}: ${provider.command}`
-      );
-      try {
-        const result = await this._apiClient.fetchCliSummary(
-          provider.command,
-          this._cancellable
-        );
-        if (!this._cancellable || this._cancellable.is_cancelled()) {
-          logDev(`CLI execution cancelled for provider: ${provider.name}`);
-          return;
-        }
-
-        this._providersData[i] = this._normalizeCliData(result, provider);
-        logDev(`Successfully executed CLI command for provider: ${provider.name}`);
-      } catch (error) {
-        if (this._cancellable && !this._cancellable.is_cancelled()) {
-          logDev(
-            `CLI error for provider ${provider.name}: ${error.message || error}`
-          );
-          console.error(
-            error,
-            `CodexBar: error running provider ${provider.name}`
-          );
-          let msg = error.message;
-          if (!msg && error.toString) msg = error.toString();
-          if (!msg || msg === "[object Object]") msg = _("Unknown CLI error");
-          this._providersData[i] = {
-            error: msg,
-            command: provider.command,
-          };
+          if (this._cancellable && !this._cancellable.is_cancelled()) {
+            logDev(
+              `CLI error for provider ${provider.name}: ${error.message || error}`
+            );
+            console.error(
+              error,
+              `CodexBar: error running provider ${provider.name}`
+            );
+            let msg = error.message;
+            if (!msg && error.toString) msg = error.toString();
+            if (!msg || msg === "[object Object]") msg = _("Unknown CLI error");
+            this._providersData[i] = {
+              error: msg,
+              command: provider.command,
+            };
+          }
         }
       }
-    }
 
-    if (this._cancellable && !this._cancellable.is_cancelled()) {
-      await this._refreshCostData();
+      if (this._cancellable && !this._cancellable.is_cancelled()) {
+        await this._refreshCostData();
 
-      // One timestamp for the whole sequential fetch; the panel countdown is
-      // skewed by the fetch duration (seconds). Stamp per provider if needed.
-      const fetchedAt = Date.now();
-      this._providersData.forEach((d) => {
-        if (d) d.fetchedAt = fetchedAt;
-      });
+        // One timestamp for the whole sequential fetch; the panel countdown is
+        // skewed by the fetch duration (seconds). Stamp per provider if needed.
+        const fetchedAt = Date.now();
+        this._providersData.forEach((d) => {
+          if (d) d.fetchedAt = fetchedAt;
+        });
+      }
+    } finally {
+      // Always settle _loading — a hung or cancelled fetch used to leave it
+      // true forever, which then made every later refresh attempt (button and
+      // auto-refresh timer alike) a silent no-op until the shell restarted.
+      const finished = !!(this._cancellable && !this._cancellable.is_cancelled());
       this._loading = false;
-      this._updateUI();
+      this._updateRefreshButton();
+      if (finished && this._settings) this._updateUI();
     }
   }
 
@@ -758,9 +822,8 @@ export default class CodexBarExtension extends Extension {
       const command = this._providers
         .map((provider) => (provider.command || "").trim())
         .find((candidate) => candidate.length > 0);
-      this._costData = await this._apiClient.fetchCostSummary(
-        this._cancellable,
-        command || ""
+      this._costData = await this._fetchWithDeadline("cost", (child) =>
+        this._apiClient.fetchCostSummary(child, command || "")
       );
       logDev(`Cost totals loaded for ${this._costData.size} provider(s)`);
     } catch (error) {
@@ -909,8 +972,7 @@ export default class CodexBarExtension extends Extension {
       this._activeProviderIndex = 0;
     }
 
-    this._loading = false;
-    this._updateUI();
+    // _loading and the UI refresh are settled by _refreshData()'s finally block.
   }
 
   /**
